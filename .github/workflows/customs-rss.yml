@@ -64,6 +64,7 @@ jobs:
             - name: 抓取 + 关键词过滤 + 去重 + 推送
               env:
                   RSSHUB_BASE: ${{ github.event.inputs.base || vars.RSSHUB_BASE }}
+                  RSSHUB_FALLBACK: ${{ vars.RSSHUB_FALLBACK }}
                   SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
                   PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
                   PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
