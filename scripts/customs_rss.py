@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -30,7 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "seen_rss.json"
 HK = timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (compatible; customs-rss/1.0; +https://github.com/alex990077-rgb/RSSHub)"
-TIMEOUT = 40
+TIMEOUT = 20              # 单个实例单次请求超时（秒）
+DEADLINE = 240            # 单轮抓取总预算（秒），超了就放弃剩余实例，避免拖垮 Actions
 STATE_MAX = 8000          # 台账上限，超出丢最旧的
 MAX_ITEMS_PUSH = 40       # 单次推送条数上限
 
@@ -67,15 +69,10 @@ def log(msg):
 
 
 def http_get(url):
+    """单次请求。多实例兜底已经在外面做了，这里不再重试，避免最坏情况拖到几分钟。"""
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8"})
-    last = None
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                return resp.read().decode("utf-8", "replace")
-        except Exception as exc:            # noqa: BLE001 — 单源失败不拖垮整轮
-            last = exc
-    raise last
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        return resp.read().decode("utf-8", "replace")
 
 
 def parse_items(xml):
@@ -203,10 +200,14 @@ def main():
     today = datetime.now(HK).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
     hits, stats = [], []
+    t0 = time.monotonic()
     for name, region, path, filt, max_age in FEEDS:
         # 多实例兜底：公共实例会限流/封 IP，某个不通就换下一个
         items, used, err = None, "", None
         for base in list(bases):
+            if time.monotonic() - t0 > DEADLINE:
+                err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余实例" % DEADLINE)
+                break
             try:
                 items = parse_items(http_get(feed_url(base, path, filt)))
                 used = base
