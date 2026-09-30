@@ -581,7 +581,8 @@ def main():
             seen = dict(list(seen.items())[-STATE_MAX:])
         STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
         ARCHIVE_DIR.mkdir(exist_ok=True)
-        month = now_hk.strftime("%Y-%m")
+        # 存档文件名默认用当前月；跨月回补（如 11 月 1 日回补 10 月）可用 ARCHIVE_MONTH 指定
+        month = os.environ.get("ARCHIVE_MONTH") or now_hk.strftime("%Y-%m")
         by_day = {}
         for h in hits:
             by_day.setdefault(h.get("pub") or "未知日期", []).append(h)
