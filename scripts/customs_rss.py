@@ -48,6 +48,10 @@ TIMEOUT = 20              # 单个实例单次请求超时（秒）
 DEADLINE = 240            # 单轮抓取总预算（秒），超了就放弃剩余实例，避免拖垮 Actions
 STATE_MAX = 8000          # 台账上限，超出丢最旧的
 MAX_ITEMS_PUSH = 40       # 单次推送条数上限
+# 回补时用 Google News 做「站内 + 日期范围」历史检索（feed 回不了整月）；
+# 这两套词只用于历史检索，不影响日常推送的精确度。
+GN_TERMS_ZH = "海关 OR 查获 OR 走私 OR 关税 OR 出口管制 OR 中国 OR 无人机 OR 稀土 OR 芯片"
+GN_TERMS_EN = 'customs OR seized OR smuggling OR tariff OR "export control" OR China OR drone OR "rare earth"'
 
 # 实例兜底顺序：公共实例会限流/封 IP，某个不通自动换下一个
 # （rsshub.app 在 GitHub Actions 上实测 403；自建容器用 http://localhost:1200）
@@ -60,19 +64,19 @@ DEFAULT_FALLBACK = (
 # 时效天数：条目发布时间早于该天数就丢弃
 FEEDS = [
     # —— 中文（港澳台、东南亚）——
-    {"name": "香港01",         "region": "HK", "kind": "rsshub", "target": "/hk01/latest",                 "max_age": 3, "lang": "zh"},
-    {"name": "星島日報",       "region": "HK", "kind": "rsshub", "target": "/stheadline/std/realtimenews", "max_age": 3, "lang": "zh"},
-    {"name": "星洲網",         "region": "MY", "kind": "rsshub", "target": "/sinchew/latest",              "max_age": 3, "lang": "zh"},
-    {"name": "星洲-天下事",     "region": "MY", "kind": "rsshub", "target": "/sinchew/category/国际/天下事", "max_age": 7, "lang": "zh"},
-    {"name": "聯合早報",       "region": "SG", "kind": "rsshub", "target": "/zaobao/realtime/china",       "max_age": 3, "lang": "zh"},
-    {"name": "中央社",         "region": "TW", "kind": "rsshub", "target": "/cna",                         "max_age": 3, "lang": "zh"},
-    {"name": "8视界",          "region": "SG", "kind": "rsshub", "target": "/8world",                      "max_age": 5, "lang": "zh"},
-    {"name": "日经中文网",     "region": "JP", "kind": "rsshub", "target": "/nikkei/cn",                   "max_age": 5, "lang": "zh"},
+    {"name": "香港01",         "region": "HK", "kind": "rsshub", "target": "/hk01/latest",                 "max_age": 3, "lang": "zh", "domain": "hk01.com"},
+    {"name": "星島日報",       "region": "HK", "kind": "rsshub", "target": "/stheadline/std/realtimenews", "max_age": 3, "lang": "zh", "domain": "stheadline.com"},
+    {"name": "星洲網",         "region": "MY", "kind": "rsshub", "target": "/sinchew/latest",              "max_age": 3, "lang": "zh", "domain": "sinchew.com.my"},
+    {"name": "星洲-天下事",     "region": "MY", "kind": "rsshub", "target": "/sinchew/category/国际/天下事", "max_age": 7, "lang": "zh", "domain": "sinchew.com.my"},
+    {"name": "聯合早報",       "region": "SG", "kind": "rsshub", "target": "/zaobao/realtime/china",       "max_age": 3, "lang": "zh", "domain": "zaobao.com"},
+    {"name": "中央社",         "region": "TW", "kind": "rsshub", "target": "/cna",                         "max_age": 3, "lang": "zh", "domain": "cna.com.tw"},
+    {"name": "8视界",          "region": "SG", "kind": "rsshub", "target": "/8world",                      "max_age": 5, "lang": "zh", "domain": "8world.com"},
+    {"name": "日经中文网",     "region": "JP", "kind": "rsshub", "target": "/nikkei/cn",                   "max_age": 5, "lang": "zh", "domain": "nikkei.com"},
     # —— 英文（通讯社 / 大报 / 官方）——
-    {"name": "韩联社-英文",    "region": "KR", "kind": "rsshub", "target": "/yna/en",                      "max_age": 3, "lang": "en"},
-    {"name": "彭博社-政治",    "region": "US", "kind": "rsshub", "target": "/bloomberg/politics",          "max_age": 3, "lang": "en"},
-    {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en"},
-    {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en"},
+    {"name": "韩联社-英文",    "region": "KR", "kind": "rsshub", "target": "/yna/en",                      "max_age": 3, "lang": "en", "domain": "yna.co.kr"},
+    {"name": "彭博社-政治",    "region": "US", "kind": "rsshub", "target": "/bloomberg/politics",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
+    {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
+    {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en", "domain": "ustr.gov"},
 ]
 
 # 已按"没有全文就去掉"移除的源（保留记录，便于日后回加）：
@@ -539,22 +543,57 @@ def main():
 
     # ── 回补模式：写存档 + 全部记账，绝不推送 ──
     if backfill:
+        # ① 历史线索：Google News 站内检索 + 日期范围（feed 只暴露最近几条，回不了整月）
+        now_hk = datetime.now(HK)
+        after = (now_hk - timedelta(days=backfill)).strftime("%Y-%m-%d")
+        before = now_hk.strftime("%Y-%m-%d")
+        gn_rows, done_dom = [], set()
+        for feed in FEEDS:
+            dom = feed.get("domain")
+            if not dom or dom in done_dom:
+                continue
+            done_dom.add(dom)
+            zh_src = feed["lang"] == "zh"
+            q = "site:%s (%s) after:%s before:%s" % (dom, GN_TERMS_ZH if zh_src else GN_TERMS_EN, after, before)
+            url = "https://news.google.com/rss/search?q=%s&hl=%s&gl=%s&ceid=%s" % (
+                urllib.parse.quote(q), "zh-CN" if zh_src else "en-US",
+                "CN" if zh_src else "US", "CN:zh-Hans" if zh_src else "US:en")
+            try:
+                gn = parse_items(http_get(url))
+            except Exception as exc:        # noqa: BLE001
+                log("[GN:%s] 历史检索失败：%s" % (dom, str(exc)[:80]))
+                continue
+            kept = 0
+            for title, link, desc, pub in gn:
+                if kept >= 60:
+                    break
+                if pub is not None and (now - pub).days > backfill:
+                    continue
+                if link in seen or not classify(title, desc, False):
+                    continue
+                seen[link] = today
+                gn_rows.append({"region": feed["region"], "source": feed["name"], "title": title, "link": link,
+                                "pub": pub.astimezone(HK).strftime("%Y-%m-%d") if pub else "", "snippet": desc[:200]})
+                kept += 1
+            log("[GN:%s] 历史线索 %d 条" % (dom, kept))
+
         if len(seen) > STATE_MAX:
             seen = dict(list(seen.items())[-STATE_MAX:])
         STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
         ARCHIVE_DIR.mkdir(exist_ok=True)
-        month = datetime.now(HK).strftime("%Y-%m")
+        month = now_hk.strftime("%Y-%m")
         by_day = {}
         for h in hits:
             by_day.setdefault(h.get("pub") or "未知日期", []).append(h)
         lines = ["# 海关查获 & 涉华出口风险 · %s 存档\n" % month,
-                 "> 回补窗口：最近 %d 天（截至 %s，北京时间）｜源 %d 个｜命中 %d 条"
-                 % (backfill, datetime.now(HK).strftime("%Y-%m-%d %H:%M"), len(FEEDS), len(hits)),
+                 "> 回补窗口：最近 %d 天（截至 %s，北京时间）｜源 %d 个" % (backfill, now_hk.strftime("%Y-%m-%d %H:%M"), len(FEEDS)),
                  "> 本存档条目已**全部写入去重台账** `seen_rss.json`，之后任何时段都不会再推送；存档仅供回溯。\n",
-                 "## 源覆盖\n", "| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 |", "| --- | --- | --- | --- | --- | --- |"]
+                 "## 源覆盖（feed 现存量）\n", "| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 |", "| --- | --- | --- | --- | --- | --- |"]
         for name, status, got, n_new, n_old, n_short, _used in stats:
             lines.append("| %s | %s | %d | %d | %d | %d |" % (name, status, got, n_new, n_old, n_short))
-        lines.append("\n## 按发布日期\n")
+        lines.append("\n## A. 全文条目（feed 现存量，%d 条）\n" % len(hits))
+        if not hits:
+            lines.append("（无：各源 feed 只暴露最近几条，9 月更早的条目见 B 段）\n")
         for day in sorted(by_day, reverse=True):
             items_day = sorted(by_day[day], key=lambda x: x["region"])
             lines.append("\n### %s（%d 条）\n" % (day, len(items_day)))
@@ -563,18 +602,28 @@ def main():
                 label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
                 lines.append("- **【%s·%s】%s** %s  \n  <%s>  \n  正文 %d 字"
                              % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"], len(h["text"])))
+        lines.append("\n## B. 历史线索（Google News 站内检索 %s ~ %s，仅标题+摘要，共 %d 条）\n"
+                     % (after, before, len(gn_rows)))
+        gn_by_day = {}
+        for r in gn_rows:
+            gn_by_day.setdefault(r["pub"] or "未知日期", []).append(r)
+        for day in sorted(gn_by_day, reverse=True):
+            lines.append("\n### %s（%d 条）\n" % (day, len(gn_by_day[day])))
+            for r in gn_by_day[day]:
+                lines.append("- 【%s】%s  \n  <%s>" % (r["source"], r["title"], r["link"]))
         md = ARCHIVE_DIR / ("%s.md" % month)
         md.write_text("\n".join(lines) + "\n", encoding="utf-8")
         js = ARCHIVE_DIR / ("%s.json" % month)
         js.write_text(json.dumps({
-            "window_days": backfill, "generated_at": datetime.now(HK).strftime("%Y-%m-%d %H:%M"),
+            "window_days": backfill, "generated_at": now_hk.strftime("%Y-%m-%d %H:%M"),
             "feeds": [f["name"] for f in FEEDS],
             "stats": [{"name": s[0], "status": s[1], "got": s[2], "hit": s[3], "old": s[4], "no_fulltext": s[5]} for s in stats],
             "items": [{"pub": h.get("pub", ""), "region": h["region"], "source": h["name"], "line": h["line"],
                        "title": h["title"], "zh_title": h.get("zh_title", ""), "link": h["link"],
-                       "cn": h["cn"], "text": h["text"]} for h in hits],
+                       "cn": h["cn"], "fulltext": True, "text": h["text"]} for h in hits],
+            "leads": [dict(r, fulltext=False) for r in gn_rows],
         }, ensure_ascii=False, indent=1), encoding="utf-8")
-        log("回补完成：命中 %d 条 → %s/rss-digest/../archive/%s.md（另存 %s.json）" % (len(hits), REPO_BLOB, month, month))
+        log("\n回补完成：全文条目 %d 条 + 历史线索 %d 条 → %s/tree/master/archive" % (len(hits), len(gn_rows), REPO_BLOB.replace("/blob/master", "")))
         log("台账已记 %d 条：这些历史条目今后不会推送。" % len(seen))
         return 0
 
