@@ -29,6 +29,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "seen_rss.json"
+DIGEST_DIR = ROOT / "rss-digest"          # 每日可读结果（每次运行追加一节，随仓库提交）
+REPO_BLOB = "https://github.com/alex990077-rgb/RSSHub/blob/master"
 HK = timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (compatible; customs-rss/1.0; +https://github.com/alex990077-rgb/RSSHub)"
 TIMEOUT = 20              # 单个实例单次请求超时（秒）
@@ -252,6 +254,34 @@ def main():
     log("\n本轮新增 %d 条：" % len(hits))
     for name, region, title, link, cn in hits:
         log("  [%s]%s %s\n      %s" % (region, "★涉华" if cn else "", title, link))
+
+    # ── 落盘可读结果：rss-digest/YYYY-MM-DD.md（每次运行追加一节，随仓库提交）──
+    now_hk = datetime.now(HK)
+    DIGEST_DIR.mkdir(exist_ok=True)
+    day_file = DIGEST_DIR / ("%s.md" % now_hk.strftime("%Y-%m-%d"))
+    sec = []
+    if not day_file.exists():
+        sec.append("# 海关查获情报 · %s\n" % now_hk.strftime("%Y-%m-%d"))
+        sec.append("> 由 `.github/workflows/customs-rss.yml` 自动生成；每天 07:10 / 15:10 各追加一节，只记新增，跨天不重复。\n")
+    flags = []
+    if dry:
+        flags.append("dry-run 演练，未推送")
+    if loose:
+        flags.append("宽松模式")
+    sec.append("\n## %s ｜ 新增 %d 条%s\n" % (now_hk.strftime("%H:%M"), len(hits), ("（%s）" % "，".join(flags)) if flags else ""))
+    sec.append("\n| 源 | 状态 | 条目 | 新增 | 过期丢弃 | 实例 |")
+    sec.append("| --- | --- | --- | --- | --- | --- |")
+    for name, status, got, n_new, n_old, used in stats:
+        sec.append("| %s | %s | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, used))
+    if hits:
+        sec.append("\n")
+        for name, region, title, link, cn in hits:
+            sec.append("- **[%s]%s** %s  \n  <%s>" % (region, "★涉华 " if cn else " ", title, link))
+    else:
+        sec.append("\n本节无新增。\n")
+    with day_file.open("a", encoding="utf-8") as fh:
+        fh.write("\n".join(sec) + "\n")
+    log("结果已写入：%s/rss-digest/%s" % (REPO_BLOB, day_file.name))
 
     if not hits:
         log("无新增，未推送。")
