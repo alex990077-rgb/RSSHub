@@ -69,22 +69,15 @@ FEEDS = [
     {"name": "日经中文网",     "region": "JP", "kind": "rsshub", "target": "/nikkei/cn",                   "max_age": 5, "lang": "zh"},
     # —— 英文（通讯社 / 大报 / 官方）——
     {"name": "韩联社-英文",    "region": "KR", "kind": "rsshub", "target": "/yna/en",                      "max_age": 3, "lang": "en"},
-    # 路透社：RSSHub 路由对公共实例返回 403/503，改用 Google News 抓它的站内稿
-    {"name": "路透社",         "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+China+(customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en"},
     {"name": "彭博社-政治",    "region": "US", "kind": "rsshub", "target": "/bloomberg/politics",          "max_age": 3, "lang": "en"},
     {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en"},
-    {"name": "华尔街日报-世界", "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",     "max_age": 3, "lang": "en"},
-    {"name": "华尔街日报-商业", "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "max_age": 3, "lang": "en"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en"},
-    {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en"},
-    # Central Asia Times：站点无可用 RSS（/feed/、/rss/ 均 404，其余路径被 Cloudflare 429）→ 走 Google News 站内检索
-    {"name": "Central Asia Times", "region": "KZ", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:centralasiatimes.com+when:7d&hl=en-US&gl=US&ceid=US:en", "max_age": 14, "lang": "en"},
-    # —— 日文：朝日新闻官网 RSS 对境外有拦，改走 Google News 站内检索 ——
-    {"name": "朝日新闻",       "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja"},
-    # —— 越南文 ——
-    {"name": "VietnamNet-时事", "region": "VN", "kind": "rss",  "target": "https://vietnamnet.vn/rss/thoi-su.rss",  "max_age": 3, "lang": "vi"},
-    {"name": "VietnamNet-国际", "region": "VN", "kind": "rss",  "target": "https://vietnamnet.vn/rss/the-gioi.rss", "max_age": 3, "lang": "vi"},
 ]
+
+# 已按"没有全文就去掉"移除的源（保留记录，便于日后回加）：
+#   路透社 / 朝日新闻 / The Star / Central Asia Times —— 只能走 Google News 站内检索，仅标题+摘要
+#   华尔街日报（feeds.content.dowjones.io）—— 正文 100~140 字，是导语不是全文
+#   VietnamNet（vietnamnet.vn/rss）—— 正文 114~216 字，是摘要不是全文
 
 # ── 关键词：按语言分组的 A/B/C 三组（规则见文件头）────────────────────────
 # kind=rsshub 的源用 CORE_FILTER 粗筛；所有源都用 A/B/C 本地精筛（多语言取并集）
@@ -196,6 +189,49 @@ def http_get(url):
         return resp.read().decode("utf-8", "replace")
 
 
+# ── 外文 → 中文翻译（云端免费接口，无需 API key）──────────────────────────
+def needs_translation(text):
+    """判断是否需要翻成中文：含假名/韩文一定要翻；汉字占比低（英/越等拉丁文）也翻。"""
+    if not text:
+        return False
+    if re.search(r"[\u3040-\u30ff\uac00-\ud7af]", text):     # 日文假名 / 韩文
+        return True
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    return cjk / max(len(text), 1) < 0.25
+
+
+def _translate_once(chunk):
+    """Google 翻译公开端点（client=gtx，免费无 key）。失败返回空串，由调用方兜底。"""
+    url = ("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q="
+           + urllib.parse.quote(chunk))
+    data = json.loads(http_get(url))
+    return "".join(seg[0] for seg in data[0] if seg and seg[0])
+
+
+def translate_text(text, limit=1600):
+    """按段落切块翻译，块大小 <= limit，避免 URL 过长与单次失败全丢。"""
+    if not text or not needs_translation(text):
+        return text
+    chunks, buf = [], ""
+    for para in re.split(r"(?<=[。！？.!?])\s+|\n+", text):
+        if not para:
+            continue
+        if len(buf) + len(para) + 1 > limit and buf:
+            chunks.append(buf)
+            buf = para
+        else:
+            buf = (buf + " " + para).strip()
+    if buf:
+        chunks.append(buf)
+    out = []
+    for c in chunks:
+        try:
+            out.append(_translate_once(c))
+        except Exception:                   # noqa: BLE001 — 翻译失败就保留原文该段
+            out.append(c)
+    return "".join(out)
+
+
 def clean_text(raw):
     """RSSHub 的 fulltext 正文是「转义后的 HTML」——先反转义，再去标签，再反转义一次。"""
     if not raw:
@@ -302,10 +338,14 @@ def send_wecom(hook, content):
 
 
 def build_body(hits, per_item, total_limit):
-    """拼推送正文：每条 = 【地区·线】标题 + 链接 + 正文（FULLTEXT=1 时是全文）。超预算就截断。"""
+    """拼推送正文：每条 = 【地区·线】中文标题（原文）+ 链接 + 正文（中文译文或原文）。超预算就截断。"""
     parts, used, truncated = [], 0, False
     for h in hits:
-        piece = ["【%s·%s】%s%s" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", h["title"]), h["link"]]
+        zh = h.get("zh_title")
+        head = "%s%s" % ("★涉华 " if h["cn"] else "", zh or h["title"])
+        if zh:
+            head += "（原文：%s）" % h["title"]
+        piece = ["【%s·%s】%s" % (h["region"], h["line"], head), h["link"]]
         if h["text"]:
             text = h["text"]
             if len(text) > per_item:
@@ -360,6 +400,9 @@ def main():
     loose = os.environ.get("LOOSE") == "1"
     fulltext = os.environ.get("FULLTEXT") == "1"
     notify_empty = os.environ.get("NOTIFY_WHEN_EMPTY") == "1"
+    translate = os.environ.get("TRANSLATE") != "0"            # 默认开：外文标题/正文翻成中文
+    translate_body = os.environ.get("TRANSLATE_BODY") != "0"  # 默认开：正文也翻
+    min_text = int(os.environ.get("MIN_TEXT") or 300)        # 正文短于此长度视为"无全文"，丢弃
     push_test = int(os.environ.get("PUSH_TEST") or 0)
     if push_test:
         fulltext = True                    # 测试推送一律带全文
@@ -373,8 +416,9 @@ def main():
             bases.append(b)
     log("RSSHub 实例（按序尝试）：%s" % " → ".join(bases))
     log("规则：线1 标题命中A组查获词 ｜ 线2 标题命中C组敏感商品/管制词 且标题命中B组涉华词%s" % (" ｜ 宽松模式已开" if loose else ""))
-    log("正文模式：%s ｜ 源 %d 个（%s）" % ("全文（mode=fulltext）" if fulltext else "摘要", len(FEEDS),
-        "".join(sorted({f["lang"] for f in FEEDS}))))
+    log("正文模式：%s ｜ 源 %d 个（%s）｜ 翻译：%s%s ｜ 无全文阈值：%d 字"
+        % ("全文（mode=fulltext）" if fulltext else "摘要", len(FEEDS), "".join(sorted({f["lang"] for f in FEEDS})),
+           "开" if translate else "关", "（含正文）" if (translate and translate_body) else "", min_text))
     for lang in KW:
         log("\n[%s] A组·查获/执法词：%s" % (lang, KW[lang]["A"]))
         log("[%s] B组·涉华指向词：%s" % (lang, KW[lang]["B"]))
@@ -426,7 +470,7 @@ def main():
             log("[%s] 抓取失败：%s" % (name, str(err)[:120]))
             continue
         got = len(items)
-        n_new = n_old = 0
+        n_new = n_old = n_short = 0
         if push_test:
             # 测试：不看台账、不看时效；优先取命中规则的条目，没有命中就取前 N 条兜底
             matched = []
@@ -440,7 +484,7 @@ def main():
             for (title, link, desc, _pub), line in picked:
                 hits.append({"name": name, "region": region, "title": title, "link": link,
                              "cn": bool(B_CHINA.search(title + " " + desc)), "text": desc, "line": line})
-            stats.append((name, "OK", got, len(picked), 0, used.replace("https://", "").replace("http://", "")[:20]))
+            stats.append((name, "OK", got, len(picked), 0, 0, used))
             continue
         for title, link, desc, pub in items:
             # 时效：发布时间过老的丢弃（抓不到时间的不丢，交给人判断）
@@ -452,19 +496,42 @@ def main():
             line = classify(title, desc, loose)
             if not line:
                 continue
+            # 无全文（只有导语/摘要）→ 丢弃、不记账，符合"没有全文就去掉"
+            if len(desc) < min_text:
+                n_short += 1
+                continue
             seen[link] = today
             n_new += 1
             hits.append({"name": name, "region": region, "title": title, "link": link,
                          "cn": bool(B_CHINA.search(title + " " + desc)), "text": desc, "line": line})
-        stats.append((name, "OK", got, n_new, n_old, used.replace("https://", "").replace("http://", "")[:20]))
+        stats.append((name, "OK", got, n_new, n_old, n_short, used))
 
     log("\n源状态：")
-    for name, status, got, n_new, n_old, used in stats:
-        log("  %-18s %-5s 条目=%-4d 命中=%-3d 过期丢弃=%-3d 源=%s" % (name, status, got, n_new, n_old, used))
+    for name, status, got, n_new, n_old, n_short, used in stats:
+        log("  %-16s %-5s 条目=%-5d 命中=%-3d 过期=%-4d 无全文=%-4d 源=%s"
+            % (name, status, got, n_new, n_old, n_short, used[:18]))
+
+    # ── 外文翻译（只翻要推的条目，控制请求数）──
+    translated_t = translated_b = 0
+    if translate and hits:
+        for h in hits[:MAX_ITEMS_PUSH]:
+            if needs_translation(h["title"]):
+                zh = translate_text(h["title"])
+                if zh and zh.replace(" ", "") != h["title"].replace(" ", ""):
+                    h["zh_title"] = zh
+                    translated_t += 1
+            if translate_body and h["text"] and needs_translation(h["text"]):
+                zh_body = translate_text(h["text"][:per_item])
+                if zh_body:
+                    h["orig_text"] = h["text"]
+                    h["text"] = zh_body
+                    translated_b += 1
+        log("翻译：标题 %d 条、正文 %d 条（Google 翻译公开端点，免费无 key）" % (translated_t, translated_b))
 
     log("\n本轮%s %d 条：" % ("测试取" if push_test else "命中", len(hits)))
     for h in hits:
-        log("  【%s·%s】%s%s\n      %s" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", h["title"], h["link"]))
+        log("  【%s·%s】%s%s（正文 %d 字）\n      %s"
+            % (h["region"], h["line"], "★涉华 " if h["cn"] else "", h.get("zh_title", h["title"]), len(h["text"]), h["link"]))
 
     # ── 测试推送不写台账、不写 digest（避免把条目"吃掉"） ──
     if push_test:
@@ -505,14 +572,16 @@ def main():
     if loose:
         flags.append("宽松模式")
     sec.append("\n## %s ｜ 新增 %d 条%s\n" % (now_hk.strftime("%H:%M"), len(hits), ("（%s）" % "，".join(flags)) if flags else ""))
-    sec.append("\n| 源 | 状态 | 条目 | 命中 | 过期丢弃 | 实例 |")
-    sec.append("| --- | --- | --- | --- | --- | --- |")
-    for name, status, got, n_new, n_old, used in stats:
-        sec.append("| %s | %s | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, used))
+    sec.append("\n| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 | 源站 |")
+    sec.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for name, status, got, n_new, n_old, n_short, used in stats:
+        sec.append("| %s | %s | %d | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, n_short, used))
     if hits:
         sec.append("\n")
         for h in hits:
-            sec.append("- **【%s·%s】%s** %s  \n  <%s>" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", h["title"], h["link"]))
+            zh = h.get("zh_title")
+            label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
+            sec.append("- **【%s·%s】%s** %s  \n  <%s>" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"]))
     else:
         sec.append("\n本节无新增。\n")
     with day_file.open("a", encoding="utf-8") as fh:
@@ -531,13 +600,18 @@ def main():
             log("无新增，未推送。")
         return 0
 
-    if dry:
-        log("DRY_RUN=1，跳过推送。")
-        return 0
-
     push = hits[:MAX_ITEMS_PUSH]
     title = "海关查获情报 %d 条（%s）" % (len(hits), datetime.now(HK).strftime("%m-%d %H:%M"))
     body, used_chars, truncated = build_body(push, per_item, total_limit)
+
+    if dry:
+        log("推送正文：%d 字符%s" % (used_chars, "（超长已截断）" if truncated else ""))
+        log("----- dry-run 正文预览（前 1500 字符）-----")
+        log(body[:1500])
+        log("----- 预览结束 -----")
+        log("DRY_RUN=1，跳过推送。")
+        return 0
+
     log("推送正文：%d 字符%s" % (used_chars, "（超长已截断）" if truncated else ""))
     push_all(title, body)
     return 0
