@@ -34,6 +34,12 @@ TIMEOUT = 40
 STATE_MAX = 8000          # 台账上限，超出丢最旧的
 MAX_ITEMS_PUSH = 40       # 单次推送条数上限
 
+# 实例兜底顺序：公共实例会限流/封 IP，某个不通自动换下一个
+# （rsshub.app 在 GitHub Actions 上实测 403；自建容器用 http://localhost:1200）
+DEFAULT_FALLBACK = (
+    "https://rsshub.liumingye.cn,https://rsshub.ktachibana.party,http://localhost:1200,https://rsshub.app"
+)
+
 # ── 源清单：(名称, 地区, RSSHub 路由, filter 正则, 时效天数) ─────────────────
 # ⚠ RSSHub 的 filter 在 opencc(繁转简) 之前执行 → 繁体源必须用繁体关键词，
 #   这里统一用「两体兼容」写法 海[關关] 这种；输出端 opencc=t2s 转简体。
@@ -172,8 +178,13 @@ def main():
 
     dry = os.environ.get("DRY_RUN") == "1"
     loose = os.environ.get("LOOSE") == "1"
-    base = (os.environ.get("RSSHUB_BASE") or "").strip().rstrip("/") or "https://rsshub.app"
-    log("RSSHub 实例：%s" % base)
+    primary = (os.environ.get("RSSHUB_BASE") or "").strip().rstrip("/")
+    fallback = [b.strip().rstrip("/") for b in (os.environ.get("RSSHUB_FALLBACK") or DEFAULT_FALLBACK).split(",") if b.strip()]
+    bases = []
+    for b in ([primary] if primary else []) + fallback:
+        if b not in bases:
+            bases.append(b)
+    log("RSSHub 实例（按序尝试）：%s" % " → ".join(bases))
     log("过滤模式：%s" % ("宽松（标题或摘要命中）" if loose else "严格（标题必须命中执法词）"))
     log("北京时间：%s" % datetime.now(HK).strftime("%Y-%m-%d %H:%M"))
 
@@ -193,30 +204,40 @@ def main():
     now = datetime.now(timezone.utc)
     hits, stats = [], []
     for name, region, path, filt, max_age in FEEDS:
-        url = feed_url(base, path, filt)
-        try:
-            items = parse_items(http_get(url))
-            got = len(items)
-            n_new = n_old = 0
-            for title, link, desc, pub in items:
-                # 时效：发布时间过老的丢弃（抓不到时间的不丢，交给人判断）
-                if pub is not None and (now - pub).days > max_age:
-                    n_old += 1
-                    continue
-                if link in seen:
-                    continue
-                # 精确度靠标题：执法词必须出现在标题里（摘要只用来判"是否涉华"）
-                # LOOSE=1 放宽为「标题或摘要命中」——召回更高、误报更多
-                if not (ENFORCE.search(title) or (loose and ENFORCE.search(title + " " + desc))):
-                    continue
-                blob = title + " " + desc
-                seen[link] = today
-                n_new += 1
-                hits.append((name, region, title, link, bool(CN_HINT.search(blob))))
-            stats.append((name, "OK", got, n_new, n_old))
-        except Exception as exc:            # noqa: BLE001
-            stats.append((name, "FAIL", 0, 0, 0))
-            log("[%s] 抓取失败：%s" % (name, str(exc)[:160]))
+        # 多实例兜底：公共实例会限流/封 IP，某个不通就换下一个
+        items, used, err = None, "", None
+        for base in list(bases):
+            try:
+                items = parse_items(http_get(feed_url(base, path, filt)))
+                used = base
+                if base != bases[0]:        # 把刚成功的实例提到最前，减少后续重试
+                    bases.remove(base)
+                    bases.insert(0, base)
+                break
+            except Exception as exc:        # noqa: BLE001 — 换下一个实例
+                err, items = exc, None
+        if items is None:
+            stats.append((name, "FAIL", 0, 0, 0, "-"))
+            log("[%s] 全部实例都失败：%s" % (name, str(err)[:120]))
+            continue
+        got = len(items)
+        n_new = n_old = 0
+        for title, link, desc, pub in items:
+            # 时效：发布时间过老的丢弃（抓不到时间的不丢，交给人判断）
+            if pub is not None and (now - pub).days > max_age:
+                n_old += 1
+                continue
+            if link in seen:
+                continue
+            # 精确度靠标题：执法词必须出现在标题里（摘要只用来判"是否涉华"）
+            # LOOSE=1 放宽为「标题或摘要命中」——召回更高、误报更多
+            if not (ENFORCE.search(title) or (loose and ENFORCE.search(title + " " + desc))):
+                continue
+            blob = title + " " + desc
+            seen[link] = today
+            n_new += 1
+            hits.append((name, region, title, link, bool(CN_HINT.search(blob))))
+        stats.append((name, "OK", got, n_new, n_old, used.replace("https://", "").replace("http://", "")[:20]))
 
     # 台账瘦身：超过上限时按插入顺序丢弃最早的
     if len(seen) > STATE_MAX:
@@ -224,8 +245,8 @@ def main():
     STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
 
     log("\n源状态：")
-    for name, status, got, n_new, n_old in stats:
-        log("  %-14s %-5s 条目=%-4d 新增=%-3d 过期丢弃=%d" % (name, status, got, n_new, n_old))
+    for name, status, got, n_new, n_old, used in stats:
+        log("  %-14s %-5s 条目=%-4d 新增=%-3d 过期丢弃=%-3d 实例=%s" % (name, status, got, n_new, n_old, used))
 
     log("\n本轮新增 %d 条：" % len(hits))
     for name, region, title, link, cn in hits:
