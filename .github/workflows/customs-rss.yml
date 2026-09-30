@@ -26,6 +26,9 @@ on:
             dry_run:
                 description: '只抓取不推送（1=是）'
                 default: ''
+            push_test:
+                description: '测试推送：每源取前 N 条（含全文、忽略去重）'
+                default: ''
             selftest:
                 description: '只自检推送通道，不抓取（1=是）'
                 default: ''
@@ -71,8 +74,12 @@ jobs:
                   PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
                   WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
                   DRY_RUN: ${{ github.event.inputs.dry_run }}
+                  PUSH_TEST: ${{ github.event.inputs.push_test }}
                   SELFTEST: ${{ github.event.inputs.selftest }}
                   LOOSE: ${{ vars.LOOSE }}
+                  FULLTEXT: ${{ vars.FULLTEXT || '1' }}
+                  TEXT_LIMIT: ${{ vars.TEXT_LIMIT || '6000' }}
+                  PUSH_LIMIT: ${{ vars.PUSH_LIMIT || '28000' }}
               run: python scripts/customs_rss.py
 
             - name: 保存去重台账与每日结果（跨天不重复推送）
