@@ -40,6 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "seen_rss.json"
 DIGEST_DIR = ROOT / "rss-digest"          # 每日可读结果（每次运行追加一节，随仓库提交）
+ARCHIVE_DIR = ROOT / "archive"            # 回补存档（一次性，随仓库提交）
 REPO_BLOB = "https://github.com/alex990077-rgb/RSSHub/blob/master"
 HK = timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (compatible; customs-rss/1.0; +https://github.com/alex990077-rgb/RSSHub)"
@@ -296,12 +297,13 @@ def classify(title, desc, loose=False):
     return None
 
 
-def feed_url(base, path, fulltext=False):
+def feed_url(base, path, fulltext=False, limit=None):
     # 中文路径必须编码（"国际/天下事" 这类），safe="/" 保留层级分隔
     qpath = urllib.parse.quote(path, safe="/")
     # limit 在 RSSHub 里是先 filter → 再 limit → 最后才 fulltext，所以全文只解析留下来的条目；
-    # 全文模式把 limit 压到 15，避免单源解析几十篇正文拖垮整轮。
-    limit = 15 if fulltext else 50
+    # 全文模式把 limit 压到 15，避免单源解析几十篇正文拖垮整轮；回补时可放宽。
+    if limit is None:
+        limit = 30 if fulltext else 50
     url = "%s%s?filter=%s&opencc=t2s&limit=%d" % (base, qpath, urllib.parse.quote(CORE_FILTER), limit)
     if fulltext:
         url += "&mode=fulltext"
@@ -403,6 +405,7 @@ def main():
     translate = os.environ.get("TRANSLATE") != "0"            # 默认开：外文标题/正文翻成中文
     translate_body = os.environ.get("TRANSLATE_BODY") != "0"  # 默认开：正文也翻
     min_text = int(os.environ.get("MIN_TEXT") or 300)        # 正文短于此长度视为"无全文"，丢弃
+    backfill = int(os.environ.get("BACKFILL_DAYS") or 0)     # >0 = 回补模式：建存档、不推送、条目全部记账
     push_test = int(os.environ.get("PUSH_TEST") or 0)
     if push_test:
         fulltext = True                    # 测试推送一律带全文
@@ -446,17 +449,20 @@ def main():
     now = datetime.now(timezone.utc)
     hits, stats = [], []
     t0 = time.monotonic()
+    budget = 1200 if backfill else DEADLINE          # 回补给足 20 分钟预算
     for feed in FEEDS:
         name, region = feed["name"], feed["region"]
         kind, target, max_age = feed["kind"], feed["target"], feed["max_age"]
+        if backfill:
+            max_age = backfill                       # 回补：按时效窗口放宽（如 30 天 = 整个 9 月）
         # rsshub 源走多实例兜底；rss/gnews 直连只有一个 URL
         items, used, err = None, "", None
         for base in (list(bases) if kind == "rsshub" else [""]):
-            if time.monotonic() - t0 > DEADLINE:
-                err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余源" % DEADLINE)
+            if time.monotonic() - t0 > budget:
+                err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余源" % budget)
                 break
             try:
-                url = feed_url(base, target, fulltext) if kind == "rsshub" else target
+                url = feed_url(base, target, fulltext, limit=40 if backfill else None) if kind == "rsshub" else target
                 items = parse_items(http_get(url))
                 used = (base or urllib.parse.urlparse(target).netloc).replace("https://", "").replace("http://", "")[:22]
                 if kind == "rsshub" and base != bases[0]:   # 把刚成功的实例提到最前
@@ -466,7 +472,7 @@ def main():
             except Exception as exc:        # noqa: BLE001 — 换下一个实例/放弃
                 err, items = exc, None
         if items is None:
-            stats.append((name, "FAIL", 0, 0, 0, "-"))
+            stats.append((name, "FAIL", 0, 0, 0, 0, "-"))
             log("[%s] 抓取失败：%s" % (name, str(err)[:120]))
             continue
         got = len(items)
@@ -491,7 +497,7 @@ def main():
             if pub is not None and (now - pub).days > max_age:
                 n_old += 1
                 continue
-            if link in seen:
+            if link in seen and not backfill:       # 回补时忽略台账，把窗口内全部收进存档
                 continue
             line = classify(title, desc, loose)
             if not line:
@@ -503,7 +509,8 @@ def main():
             seen[link] = today
             n_new += 1
             hits.append({"name": name, "region": region, "title": title, "link": link,
-                         "cn": bool(B_CHINA.search(title + " " + desc)), "text": desc, "line": line})
+                         "cn": bool(B_CHINA.search(title + " " + desc)), "text": desc, "line": line,
+                         "pub": pub.astimezone(HK).strftime("%Y-%m-%d") if pub else ""})
         stats.append((name, "OK", got, n_new, n_old, n_short, used))
 
     log("\n源状态：")
@@ -511,7 +518,7 @@ def main():
         log("  %-16s %-5s 条目=%-5d 命中=%-3d 过期=%-4d 无全文=%-4d 源=%s"
             % (name, status, got, n_new, n_old, n_short, used[:18]))
 
-    # ── 外文翻译（只翻要推的条目，控制请求数）──
+    # ── 外文翻译（回补时只翻标题，避免上千次请求）──
     translated_t = translated_b = 0
     if translate and hits:
         for h in hits[:MAX_ITEMS_PUSH]:
@@ -520,13 +527,56 @@ def main():
                 if zh and zh.replace(" ", "") != h["title"].replace(" ", ""):
                     h["zh_title"] = zh
                     translated_t += 1
-            if translate_body and h["text"] and needs_translation(h["text"]):
+            if translate_body and not backfill and h["text"] and needs_translation(h["text"]):
                 zh_body = translate_text(h["text"][:per_item])
                 if zh_body:
                     h["orig_text"] = h["text"]
                     h["text"] = zh_body
                     translated_b += 1
+        if backfill and len(hits) > MAX_ITEMS_PUSH:
+            log("回补模式：标题只翻前 %d 条（共 %d 条），其余保留原文" % (MAX_ITEMS_PUSH, len(hits)))
         log("翻译：标题 %d 条、正文 %d 条（Google 翻译公开端点，免费无 key）" % (translated_t, translated_b))
+
+    # ── 回补模式：写存档 + 全部记账，绝不推送 ──
+    if backfill:
+        if len(seen) > STATE_MAX:
+            seen = dict(list(seen.items())[-STATE_MAX:])
+        STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
+        ARCHIVE_DIR.mkdir(exist_ok=True)
+        month = datetime.now(HK).strftime("%Y-%m")
+        by_day = {}
+        for h in hits:
+            by_day.setdefault(h.get("pub") or "未知日期", []).append(h)
+        lines = ["# 海关查获 & 涉华出口风险 · %s 存档\n" % month,
+                 "> 回补窗口：最近 %d 天（截至 %s，北京时间）｜源 %d 个｜命中 %d 条"
+                 % (backfill, datetime.now(HK).strftime("%Y-%m-%d %H:%M"), len(FEEDS), len(hits)),
+                 "> 本存档条目已**全部写入去重台账** `seen_rss.json`，之后任何时段都不会再推送；存档仅供回溯。\n",
+                 "## 源覆盖\n", "| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 |", "| --- | --- | --- | --- | --- | --- |"]
+        for name, status, got, n_new, n_old, n_short, _used in stats:
+            lines.append("| %s | %s | %d | %d | %d | %d |" % (name, status, got, n_new, n_old, n_short))
+        lines.append("\n## 按发布日期\n")
+        for day in sorted(by_day, reverse=True):
+            items_day = sorted(by_day[day], key=lambda x: x["region"])
+            lines.append("\n### %s（%d 条）\n" % (day, len(items_day)))
+            for h in items_day:
+                zh = h.get("zh_title")
+                label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
+                lines.append("- **【%s·%s】%s** %s  \n  <%s>  \n  正文 %d 字"
+                             % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"], len(h["text"])))
+        md = ARCHIVE_DIR / ("%s.md" % month)
+        md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        js = ARCHIVE_DIR / ("%s.json" % month)
+        js.write_text(json.dumps({
+            "window_days": backfill, "generated_at": datetime.now(HK).strftime("%Y-%m-%d %H:%M"),
+            "feeds": [f["name"] for f in FEEDS],
+            "stats": [{"name": s[0], "status": s[1], "got": s[2], "hit": s[3], "old": s[4], "no_fulltext": s[5]} for s in stats],
+            "items": [{"pub": h.get("pub", ""), "region": h["region"], "source": h["name"], "line": h["line"],
+                       "title": h["title"], "zh_title": h.get("zh_title", ""), "link": h["link"],
+                       "cn": h["cn"], "text": h["text"]} for h in hits],
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+        log("回补完成：命中 %d 条 → %s/rss-digest/../archive/%s.md（另存 %s.json）" % (len(hits), REPO_BLOB, month, month))
+        log("台账已记 %d 条：这些历史条目今后不会推送。" % len(seen))
+        return 0
 
     log("\n本轮%s %d 条：" % ("测试取" if push_test else "命中", len(hits)))
     for h in hits:
