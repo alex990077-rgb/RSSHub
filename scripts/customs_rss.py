@@ -108,6 +108,19 @@ KW = {
         ),
         "D": r"胡塞|真主黨|真主党|哈瑪斯|哈马斯|伊朗|朝鮮|朝鲜|俄羅斯|俄罗斯|受制裁|繞道|绕道|第三國|第三国|黑市|掮客|中介|網店|网店|電商|电商|公開販售|公开贩售",
         "T": r"出口|进口|進口|貨物|货物|貨運|贸易|貿易|商品|转运|轉運|转口|轉口|走私|報關|报关|清關|清关|订单|訂單|採購|采购|供應鏈|供应链",
+        # E：跨境/贸易语境词 —— 线1 必须同时命中 A + E，否则就只是"本地警察查获"的社会新闻
+        "E": (
+            r"海[關关]|關[稅税]|关税|[緝缉]私|走私|私[煙烟]|報關|报关|清[關关]|进出口|進出口|出口|进口|進口|"
+            r"貨[物櫃]|货物|货柜|集裝箱|集装箱|口岸|邊境|边境|跨境|機場|机场|港口|碼頭|码头|郵包|邮包|"
+            r"快遞|快递|保稅|保税|轉運|转运|轉口|转口|外貿|外贸|貿易|贸易|海巡|航警|移民署|關務|关务|"
+            r"檢疫|检疫|查緝|查缉|貨輪|货轮|漁船|渔船|船[舶隻只]|自由貿易|自由贸易|口岸|緝毒|缉毒"
+        ),
+        # N：噪音词 —— 命中即丢弃（地方治安/社会新闻，与进出口无关）
+        "N": (
+            r"車手|车手|詐[騙欺團]|诈骗|诈团|賭|赌|竊|窃|搶|抢|鬥毆|斗殴|毆打|殴打|家暴|火警|酒駕|酒驾|"
+            r"毒駕|毒驾|性侵|偷拍|棄養|弃养|幫派|帮派|槍擊|枪击|命案|凶殺|兇殺|凶杀|車禍|车祸|輕生|轻生|"
+            r"自殺|自杀|竊盜|窃盗|吸毒|販毒集團|贩毒集团|虐[待貓狗]|糾紛|纠纷|討債|讨债|圍毆|围殴"
+        ),
     },
     "en": {
         "A": (
@@ -125,6 +138,11 @@ KW = {
         ),
         "D": r"Houthi|Hezbollah|Hamas|Iran|North Korea|Russia|black market|broker|intermediary|online shop|e-commerce|third country",
         "T": r"export|import|cargo|shipment|trade|goods|supply|procure|order|consignment|container|port|exports",
+        "E": (
+            r"customs|border|port|airport|harbou?r|cargo|container|shipment|freight|vessel|warehouse|"
+            r"export|import|trade|declaration|tariff|bonded|quarantine|smuggl|contraband|consignment"
+        ),
+        "N": r"money mule|shoplifting|domestic violence|armed robbery|hit-and-run|car crash|carjacking|stalker|drunk driving",
     },
     "ja": {
         "A": r"税関|密輸|押収|没収|偽ブランド|侵害|申告漏れ|脱税|密輸出|密輸入|関税法違反",
@@ -136,6 +154,8 @@ KW = {
         ),
         "D": r"フーシ|ヒズボラ|ハマス|イラン|北朝鮮|ロシア|闇市場|ブローカー|仲介",
         "T": r"輸出|輸入|貨物|貿易|商品|積み替え|転送|通関|サプライチェーン|コンテナ",
+        "E": r"税関|通関|密輸|輸出|輸入|貨物|コンテナ|港湾|空港|保税|貿易|検疫|税関職員",
+        "N": r"詐欺|ストーカー|痴漢|万引き|飲酒運転|ひき逃げ|強盗|殺人",
     },
     "ko": {
         "A": r"세관|밀수|압수|위조|침해|탈세|허위신고|관세법 위반",
@@ -147,6 +167,8 @@ KW = {
         ),
         "D": r"후티|헤즈볼라|하마스|이란|북한|러시아|암시장|브로커|중개",
         "T": r"수출|수입|화물|무역|상품|운송|환적|통관|컨테이너",
+        "E": r"세관|통관|밀수|수출|수입|화물|컨테이너|항만|공항|보세|무역|검역",
+        "N": r"보이스피싱|성범죄|음주운전|절도|강도|살인|마약사범",
     },
     "vi": {
         "A": r"hải quan|tịch thu|buôn lậu|hàng giả|hàng nhái|xuất lậu|nhập lậu|gian lận thương mại|trốn thuế|vận chuyển trái phép",
@@ -158,6 +180,8 @@ KW = {
         ),
         "D": r"Houthi|Hezbollah|Hamas|Iran|Triều Tiên|Nga|chợ đen|môi giới|trung gian",
         "T": r"xuất khẩu|nhập khẩu|hàng hóa|thương mại|vận chuyển|container|cảng",
+        "E": r"hải quan|xuất khẩu|nhập khẩu|nhập lậu|xuất lậu|hàng hóa|container|cảng|sân bay|thương mại|cửa khẩu|kiểm dịch",
+        "N": r"lừa đảo|cướp|tai nạn|trộm|giết người|hiếp dâm",
     },
 }
 A_ENFORCE = re.compile("|".join("(?:%s)" % KW[k]["A"] for k in KW), re.I)
@@ -165,6 +189,8 @@ B_CHINA = re.compile("|".join("(?:%s)" % KW[k]["B"] for k in KW), re.I)
 C_GOODS = re.compile("|".join("(?:%s)" % KW[k]["C"] for k in KW), re.I)
 D_FLOW = re.compile("|".join("(?:%s)" % KW[k]["D"] for k in KW), re.I)
 T_TRADE = re.compile("|".join("(?:%s)" % KW[k]["T"] for k in KW), re.I)
+E_CROSS = re.compile("|".join("(?:%s)" % KW[k]["E"] for k in KW), re.I)
+N_NOISE = re.compile("|".join("(?:%s)" % KW[k]["N"] for k in KW), re.I)
 
 # RSSHub 端的粗筛（召回优先，只放高价值词，避免 URL 过长）：
 # 真正决定"推不推"的是上面 A/B/C 三组的本地精筛。
@@ -283,20 +309,23 @@ def parse_items(xml):
 def classify(title, desc, loose=False):
     """返回命中的线名；不命中返回 None。
 
-    线1【查获】   = 标题命中 A 组（查获/执法词）
-    线2【涉华出口】= 标题命中 C 组（敏感商品/管制词）且标题命中 B 组（涉华指向词）
+    线1【查获】   = 标题命中 A（查获/执法词）**且**命中 E（跨境/贸易语境词）
+                    —— 只命中 A 的是"本地警察查获"社会新闻（如"嘉市警查获3车手"），丢弃
+    线2【涉华出口】= 标题命中 C（敏感商品/管制词）且标题命中 B（涉华指向词）
     线3【涉华流向】= 标题同时命中 B + D（受制裁买家/规避手法/黑市渠道）+ T（贸易流向词）
-                    —— 抓"中国货经第三国流向受制裁方"这类叙事，避免"China vs Iran 球赛"式误报
-    LOOSE=1 放宽：B 可放宽到正文；另允许正文命中 A
+    另外：标题命中 N（噪音词：诈骗/赌博/车祸/家暴…）直接丢弃
+    LOOSE=1 放宽：B 可放宽到正文；线1 允许 A 在正文（E 仍在标题）
     """
-    if A_ENFORCE.search(title):
+    if N_NOISE.search(title):
+        return None
+    if A_ENFORCE.search(title) and E_CROSS.search(title):
         return "查获"
     b_hit = B_CHINA.search(title) or (loose and B_CHINA.search(title + " " + desc))
     if C_GOODS.search(title) and b_hit:
         return "涉华出口"
     if D_FLOW.search(title) and T_TRADE.search(title) and b_hit:
         return "涉华流向"
-    if loose and A_ENFORCE.search(title + " " + desc):
+    if loose and A_ENFORCE.search(title + " " + desc) and E_CROSS.search(title):
         return "查获·宽松"
     return None
 
@@ -432,6 +461,8 @@ def main():
         log("[%s] C组·敏感商品/管制词：%s" % (lang, KW[lang]["C"]))
         log("[%s] D组·流向/手法/渠道：%s" % (lang, KW[lang]["D"]))
         log("[%s] T组·贸易流向词：%s" % (lang, KW[lang]["T"]))
+        log("[%s] E组·跨境/贸易语境词（线1 必备）：%s" % (lang, KW[lang]["E"]))
+        log("[%s] N组·噪音词（命中即丢）：%s" % (lang, KW[lang]["N"]))
     log("\nRSSHub 端粗筛：%s" % CORE_FILTER)
     if push_test:
         log("\nPUSH_TEST=%d：测试推送，每源取前 %d 条，强制全文，不写台账/digest" % (push_test, push_test))
