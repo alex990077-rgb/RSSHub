@@ -89,7 +89,7 @@ FEEDS = [
 KW = {
     "zh": {
         "A": (
-            r"海[關关]|查[獲获]|檢[獲获]|检[獲获]|緝[獲获]|缉[獲获]|截[獲获]|破[獲获]|偵破|侦破|"
+            r"查[獲获]|檢[獲获]|检[獲获]|緝[獲获]|缉[獲获]|截[獲获]|破[獲获]|偵破|侦破|"
             r"扣留|扣押|沒收|没收|收繳|收缴|查扣|走私|私[煙烟]|[緝缉]私|侵[權权]|假冒|盜版|盗版|"
             r"固[廢废]|洋垃圾|退[運运]|瞞報|瞒报|逃[稅税]|低報|低报|水[貨货]|販毒|贩毒|洗黑[錢钱]"
         ),
@@ -119,12 +119,12 @@ KW = {
         "N": (
             r"車手|车手|詐[騙欺團]|诈骗|诈团|賭|赌|竊|窃|搶|抢|鬥毆|斗殴|毆打|殴打|家暴|火警|酒駕|酒驾|"
             r"毒駕|毒驾|性侵|偷拍|棄養|弃养|幫派|帮派|槍擊|枪击|命案|凶殺|兇殺|凶杀|車禍|车祸|輕生|轻生|"
-            r"自殺|自杀|竊盜|窃盗|吸毒|販毒集團|贩毒集团|虐[待貓狗]|糾紛|纠纷|討債|讨债|圍毆|围殴"
+            r"自殺|自杀|竊盜|窃盗|吸毒|販毒集團|贩毒集团|虐[待貓狗]|糾紛|纠纷|討債|讨债|圍毆|围殴|消委會|消委会|商品說明|商品说明|不良營商|不良营商"
         ),
     },
     "en": {
         "A": (
-            r"customs|seized|seizure|confiscat|smuggl|contraband|counterfeit|infringing|undeclared|"
+            r"seized|seizure|confiscat|smuggl|contraband|counterfeit|infringing|undeclared|"
             r"misdeclar|evasion|forced labo|laundering|trafficking|illicit trade"
         ),
         "B": r"China|Chinese|Beijing|Hong Kong|Made in China|Shenzhen|Guangzhou|Yiwu|Shanghai|Renminbi|yuan|mainland",
@@ -145,7 +145,7 @@ KW = {
         "N": r"money mule|shoplifting|domestic violence|armed robbery|hit-and-run|car crash|carjacking|stalker|drunk driving",
     },
     "ja": {
-        "A": r"税関|密輸|押収|没収|偽ブランド|侵害|申告漏れ|脱税|密輸出|密輸入|関税法違反",
+        "A": r"密輸|押収|没収|偽ブランド|侵害|申告漏れ|脱税|密輸出|密輸入|関税法違反",
         "B": r"中国|中国製|北京|香港|上海|中国企業|人民元",
         "C": (
             r"輸出管理|デュアルユース|軍民両用|ドローン|無人機|レアアース|希土類|ガリウム|ゲルマニウム|黒鉛|"
@@ -158,7 +158,7 @@ KW = {
         "N": r"詐欺|ストーカー|痴漢|万引き|飲酒運転|ひき逃げ|強盗|殺人",
     },
     "ko": {
-        "A": r"세관|밀수|압수|위조|침해|탈세|허위신고|관세법 위반",
+        "A": r"밀수|압수|위조|침해|탈세|허위신고|관세법 위반",
         "B": r"중국|중국산|베이징|홍콩|상하이|중국기업|위안화",
         "C": (
             r"수출통제|군민양용|드론|무인기|희토류|갈륨|게르마늄|흑연|반도체|배터리|리튬|태양광|무기|탄약|"
@@ -171,7 +171,7 @@ KW = {
         "N": r"보이스피싱|성범죄|음주운전|절도|강도|살인|마약사범",
     },
     "vi": {
-        "A": r"hải quan|tịch thu|buôn lậu|hàng giả|hàng nhái|xuất lậu|nhập lậu|gian lận thương mại|trốn thuế|vận chuyển trái phép",
+        "A": r"tịch thu|buôn lậu|hàng giả|hàng nhái|xuất lậu|nhập lậu|gian lận thương mại|trốn thuế|vận chuyển trái phép",
         "B": r"Trung Quốc|Đài Loan|Hồng Kông|made in china|Thượng Hải|Quảng Đông",
         "C": (
             r"xuất khẩu|nhập khẩu|xuất xứ|gian lận xuất xứ|chuyển tải|trung chuyển|máy bay không người lái|"
@@ -689,8 +689,12 @@ def main():
         STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # ── 落盘可读结果：rss-digest/YYYY-MM-DD.md（每次运行追加一节，随仓库提交）──
+    # dry-run 演练不写 digest，避免演练记录污染仓库与下游周/月总结
     now_hk = datetime.now(HK)
-    DIGEST_DIR.mkdir(exist_ok=True)
+    if dry:
+        log("DRY_RUN=1：不写 digest（演练不留痕）。")
+    else:
+        DIGEST_DIR.mkdir(exist_ok=True)
     day_file = DIGEST_DIR / ("%s.md" % now_hk.strftime("%Y-%m-%d"))
     sec = []
     if not day_file.exists():
@@ -715,9 +719,10 @@ def main():
             sec.append("- **【%s·%s】%s** %s  \n  <%s>" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"]))
     else:
         sec.append("\n本节无新增。\n")
-    with day_file.open("a", encoding="utf-8") as fh:
-        fh.write("\n".join(sec) + "\n")
-    log("结果已写入：%s/rss-digest/%s" % (REPO_BLOB, day_file.name))
+    if not dry:
+        with day_file.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(sec) + "\n")
+        log("结果已写入：%s/rss-digest/%s" % (REPO_BLOB, day_file.name))
 
     if not hits:
         if notify_empty and not dry:
