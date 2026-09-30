@@ -69,17 +69,17 @@ FEEDS = [
     {"name": "日经中文网",     "region": "JP", "kind": "rsshub", "target": "/nikkei/cn",                   "max_age": 5, "lang": "zh"},
     # —— 英文（通讯社 / 大报 / 官方）——
     {"name": "韩联社-英文",    "region": "KR", "kind": "rsshub", "target": "/yna/en",                      "max_age": 3, "lang": "en"},
-    {"name": "路透社-商业",    "region": "US", "kind": "rsshub", "target": "/reuters/business",            "max_age": 3, "lang": "en"},
-    {"name": "路透社-世界",    "region": "US", "kind": "rsshub", "target": "/reuters/world",               "max_age": 3, "lang": "en"},
+    # 路透社：RSSHub 路由对公共实例返回 403/503，改用 Google News 抓它的站内稿
+    {"name": "路透社",         "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+China+(customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en"},
     {"name": "彭博社-政治",    "region": "US", "kind": "rsshub", "target": "/bloomberg/politics",          "max_age": 3, "lang": "en"},
     {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en"},
     {"name": "华尔街日报-世界", "region": "US", "kind": "rss",   "target": "https://feeds.a.dj.com/rss/RSSWorldNews.xml",     "max_age": 3, "lang": "en"},
     {"name": "华尔街日报-商业", "region": "US", "kind": "rss",   "target": "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml", "max_age": 3, "lang": "en"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en"},
     {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en"},
-    {"name": "Central Asia Times", "region": "KZ", "kind": "rss", "target": "https://centralasiatimes.com/feed/", "max_age": 14, "lang": "en"},
-    # —— 日文 ——
-    {"name": "朝日新闻",       "region": "JP", "kind": "rss",   "target": "https://www.asahi.com/rss/asahi/newsheadlines.rss", "max_age": 3, "lang": "ja"},
+    {"name": "Central Asia Times", "region": "KZ", "kind": "rss", "target": "https://www.centralasiatimes.com/feed/", "max_age": 14, "lang": "en"},
+    # —— 日文：朝日新闻官网 RSS 对境外有拦，改走 Google News 站内检索 ——
+    {"name": "朝日新闻",       "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja"},
     # —— 越南文 ——
     {"name": "VietnamNet-时事", "region": "VN", "kind": "rss",  "target": "https://vietnamnet.vn/rss/thoi-su.rss",  "max_age": 3, "lang": "vi"},
     {"name": "VietnamNet-国际", "region": "VN", "kind": "rss",  "target": "https://vietnamnet.vn/rss/the-gioi.rss", "max_age": 3, "lang": "vi"},
@@ -92,8 +92,7 @@ KW = {
         "A": (
             r"海[關关]|查[獲获]|檢[獲获]|检[獲获]|緝[獲获]|缉[獲获]|截[獲获]|破[獲获]|偵破|侦破|"
             r"扣留|扣押|沒收|没收|收繳|收缴|查扣|走私|私[煙烟]|[緝缉]私|侵[權权]|假冒|盜版|盗版|"
-            r"固[廢废]|洋垃圾|退[運运]|瞞報|瞒报|逃[稅税]|低報|低报|水[貨货]|販毒|贩毒|洗黑[錢钱]|"
-            r"取[締缔]|罰款|罚款|起訴|起诉|判刑"
+            r"固[廢废]|洋垃圾|退[運运]|瞞報|瞒报|逃[稅税]|低報|低报|水[貨货]|販毒|贩毒|洗黑[錢钱]"
         ),
         "B": (
             r"中國|中国|中方|中企|國企|国企|中資|中资|中國製造|中国制造|Made in China|Chinese|"
@@ -129,7 +128,7 @@ KW = {
         "T": r"export|import|cargo|shipment|trade|goods|supply|procure|order|consignment|container|port|exports",
     },
     "ja": {
-        "A": r"税関|密輸|押収|没収|摘発|偽ブランド|侵害|申告漏れ|脱税|密輸出|密輸入",
+        "A": r"税関|密輸|押収|没収|偽ブランド|侵害|申告漏れ|脱税|密輸出|密輸入|関税法違反",
         "B": r"中国|中国製|北京|香港|上海|中国企業|人民元",
         "C": (
             r"輸出管理|デュアルユース|軍民両用|ドローン|無人機|レアアース|希土類|ガリウム|ゲルマニウム|黒鉛|"
@@ -140,7 +139,7 @@ KW = {
         "T": r"輸出|輸入|貨物|貿易|商品|積み替え|転送|通関|サプライチェーン|コンテナ",
     },
     "ko": {
-        "A": r"세관|밀수|압수|적발|위조|침해|탈세|허위신고",
+        "A": r"세관|밀수|압수|위조|침해|탈세|허위신고|관세법 위반",
         "B": r"중국|중국산|베이징|홍콩|상하이|중국기업|위안화",
         "C": (
             r"수출통제|군민양용|드론|무인기|희토류|갈륨|게르마늄|흑연|반도체|배터리|리튬|태양광|무기|탄약|"
@@ -151,7 +150,7 @@ KW = {
         "T": r"수출|수입|화물|무역|상품|운송|환적|통관|컨테이너",
     },
     "vi": {
-        "A": r"hải quan|tịch thu|bắt giữ|buôn lậu|hàng giả|hàng nhái|khởi tố|tạm giữ|tiêu hủy|gian lận|trốn thuế",
+        "A": r"hải quan|tịch thu|buôn lậu|hàng giả|hàng nhái|xuất lậu|nhập lậu|gian lận thương mại|trốn thuế|vận chuyển trái phép",
         "B": r"Trung Quốc|Đài Loan|Hồng Kông|made in china|Thượng Hải|Quảng Đông",
         "C": (
             r"xuất khẩu|nhập khẩu|xuất xứ|gian lận xuất xứ|chuyển tải|trung chuyển|máy bay không người lái|"
