@@ -81,6 +81,9 @@ jobs:
                   LOOSE: ${{ vars.LOOSE }}
                   NOTIFY_WHEN_EMPTY: ${{ vars.NOTIFY_WHEN_EMPTY }}
                   FULLTEXT: ${{ vars.FULLTEXT || '1' }}
+                  TRANSLATE: ${{ vars.TRANSLATE || '1' }}
+                  TRANSLATE_BODY: ${{ vars.TRANSLATE_BODY || '1' }}
+                  MIN_TEXT: ${{ vars.MIN_TEXT || '300' }}
                   TEXT_LIMIT: ${{ vars.TEXT_LIMIT || '6000' }}
                   PUSH_LIMIT: ${{ vars.PUSH_LIMIT || '28000' }}
               run: python scripts/customs_rss.py
