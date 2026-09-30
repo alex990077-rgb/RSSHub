@@ -16,6 +16,7 @@
   LOOSE=1             放宽过滤：标题或摘要命中执法词即算（默认只看标题，精度优先）
 """
 
+import html
 import json
 import os
 import re
@@ -77,8 +78,21 @@ def http_get(url):
         return resp.read().decode("utf-8", "replace")
 
 
+def clean_text(raw):
+    """RSSHub 的 fulltext 正文是「转义后的 HTML」——先反转义，再去标签，再反转义一次。"""
+    if not raw:
+        return ""
+    txt = html.unescape(raw)
+    txt = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", txt, flags=re.S | re.I)
+    txt = re.sub(r"<br\s*/?>|</p>|</div>", "\n", txt, flags=re.I)
+    txt = re.sub(r"<[^>]+>", " ", txt)
+    txt = html.unescape(txt)
+    txt = re.sub(r"[ \t\u00a0]+", " ", txt)
+    return re.sub(r"\n{3,}", "\n\n", txt).strip()
+
+
 def parse_items(xml):
-    """同时兼容 RSS(<item>) 与 Atom(<entry>)。返回 (标题, 链接, 摘要, 发布时间) """
+    """同时兼容 RSS(<item>) 与 Atom(<entry>)。返回 (标题, 链接, 正文/摘要, 发布时间) """
     out = []
     for block in re.findall(r"<item[\s>].*?</item>", xml, re.S) + re.findall(r"<entry[\s>].*?</entry>", xml, re.S):
         t = re.search(r"<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", block, re.S)
@@ -89,8 +103,8 @@ def parse_items(xml):
         p = re.search(r"<(?:pubDate|published|updated)[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</(?:pubDate|published|updated)>", block, re.S)
         if not (t and l):
             continue
-        title = re.sub(r"<[^>]+>", " ", t.group(1)).strip()
-        desc = re.sub(r"<[^>]+>", " ", d.group(1)).strip() if d else ""
+        title = clean_text(t.group(1))
+        desc = clean_text(d.group(1)) if d else ""
         pub = None
         if p:
             raw = p.group(1).strip()
@@ -107,8 +121,14 @@ def parse_items(xml):
     return out
 
 
-def feed_url(base, path, filt):
-    return "%s%s?filter=%s&opencc=t2s&limit=50" % (base, path, urllib.parse.quote(filt))
+def feed_url(base, path, filt, fulltext=False):
+    # limit 在 RSSHub 里是先 filter → 再 limit → 最后才 fulltext，所以全文只解析留下来的条目；
+    # 全文模式把 limit 压到 15，避免单源解析几十篇正文拖垮整轮。
+    limit = 15 if fulltext else 50
+    url = "%s%s?filter=%s&opencc=t2s&limit=%d" % (base, path, urllib.parse.quote(filt), limit)
+    if fulltext:
+        url += "&mode=fulltext"
+    return url
 
 
 def send_serverchan(key, title, content):
@@ -138,6 +158,25 @@ def send_wecom(hook, content):
     req = urllib.request.Request(hook, data=data, headers={"Content-Type": "application/json", "User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read().decode("utf-8", "replace")
+
+
+def build_body(hits, per_item, total_limit):
+    """拼推送正文：每条 = 地区 + 标题 + 链接 + 正文（FULLTEXT=1 时是全文）。超预算就截断。"""
+    parts, used, truncated = [], 0, False
+    for _name, region, title, link, cn, text in hits:
+        piece = ["【%s】%s%s" % (region, "★涉华 " if cn else "", title), link]
+        if text:
+            if len(text) > per_item:
+                text = text[:per_item] + "……（正文超长已截断，详见链接）"
+                truncated = True
+            piece.append(text)
+        block = "\n".join(piece)
+        if used + len(block) > total_limit:
+            truncated = True
+            break
+        parts.append(block)
+        used += len(block) + 12
+    return "\n\n──────────\n\n".join(parts), used, truncated
 
 
 def push_all(title, body):
@@ -177,6 +216,12 @@ def main():
 
     dry = os.environ.get("DRY_RUN") == "1"
     loose = os.environ.get("LOOSE") == "1"
+    fulltext = os.environ.get("FULLTEXT") == "1"
+    push_test = int(os.environ.get("PUSH_TEST") or 0)
+    if push_test:
+        fulltext = True                    # 测试推送一律带全文
+    per_item = int(os.environ.get("TEXT_LIMIT") or 6000)      # 每条正文上限（字符）
+    total_limit = int(os.environ.get("PUSH_LIMIT") or 28000)  # 整条推送上限（Server酱 32KB 以内）
     primary = (os.environ.get("RSSHUB_BASE") or "").strip().rstrip("/")
     fallback = [b.strip().rstrip("/") for b in (os.environ.get("RSSHUB_FALLBACK") or DEFAULT_FALLBACK).split(",") if b.strip()]
     bases = []
@@ -185,6 +230,9 @@ def main():
             bases.append(b)
     log("RSSHub 实例（按序尝试）：%s" % " → ".join(bases))
     log("过滤模式：%s" % ("宽松（标题或摘要命中）" if loose else "严格（标题必须命中执法词）"))
+    log("正文模式：%s" % ("全文（mode=fulltext）" if fulltext else "摘要"))
+    if push_test:
+        log("PUSH_TEST=%d：测试推送，每源取前 %d 条，强制全文，不写台账/digest" % (push_test, push_test))
     log("北京时间：%s" % datetime.now(HK).strftime("%Y-%m-%d %H:%M"))
 
     if os.environ.get("SELFTEST") == "1":
@@ -211,7 +259,7 @@ def main():
                 err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余实例" % DEADLINE)
                 break
             try:
-                items = parse_items(http_get(feed_url(base, path, filt)))
+                items = parse_items(http_get(feed_url(base, path, filt, fulltext)))
                 used = base
                 if base != bases[0]:        # 把刚成功的实例提到最前，减少后续重试
                     bases.remove(base)
@@ -225,6 +273,16 @@ def main():
             continue
         got = len(items)
         n_new = n_old = 0
+        if push_test:
+            # 测试：不看台账、不看时效；优先取命中关键词的条目，没有命中就取前 N 条兜底
+            matched = [it for it in items if ENFORCE.search(it[0])]
+            picked = matched[:push_test] or items[:push_test]
+            if not matched:
+                log("[%s] 测试兜底：该源当前没有命中关键词的条目，取前 %d 条" % (name, len(picked)))
+            for title, link, desc, _pub in picked:
+                hits.append((name, region, title, link, bool(CN_HINT.search(title + " " + desc)), desc))
+            stats.append((name, "OK", got, len(picked), 0, used.replace("https://", "").replace("http://", "")[:20]))
+            continue
         for title, link, desc, pub in items:
             # 时效：发布时间过老的丢弃（抓不到时间的不丢，交给人判断）
             if pub is not None and (now - pub).days > max_age:
@@ -239,21 +297,37 @@ def main():
             blob = title + " " + desc
             seen[link] = today
             n_new += 1
-            hits.append((name, region, title, link, bool(CN_HINT.search(blob))))
+            hits.append((name, region, title, link, bool(CN_HINT.search(blob)), desc))
         stats.append((name, "OK", got, n_new, n_old, used.replace("https://", "").replace("http://", "")[:20]))
-
-    # 台账瘦身：超过上限时按插入顺序丢弃最早的
-    if len(seen) > STATE_MAX:
-        seen = dict(list(seen.items())[-STATE_MAX:])
-    STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
 
     log("\n源状态：")
     for name, status, got, n_new, n_old, used in stats:
         log("  %-14s %-5s 条目=%-4d 新增=%-3d 过期丢弃=%-3d 实例=%s" % (name, status, got, n_new, n_old, used))
 
-    log("\n本轮新增 %d 条：" % len(hits))
-    for name, region, title, link, cn in hits:
+    log("\n本轮%s %d 条：" % ("测试取" if push_test else "新增", len(hits)))
+    for name, region, title, link, cn, _text in hits:
         log("  [%s]%s %s\n      %s" % (region, "★涉华" if cn else "", title, link))
+
+    # ── 测试推送不写台账、不写 digest（避免把条目"吃掉"） ──
+    if push_test:
+        now_hk = datetime.now(HK)
+        title = "海关查获情报·测试推送 %d 条（%s）" % (len(hits), now_hk.strftime("%m-%d %H:%M"))
+        body, used_chars, truncated = build_body(hits, per_item, total_limit)
+        log("\n推送正文：%d 字符%s" % (used_chars, "（已截断）" if truncated else ""))
+        if dry or not any(os.environ.get(k) for k in ("SERVERCHAN_SENDKEY", "PUSHPLUS_TOKEN", "WECOM_WEBHOOK")):
+            log("----- 正文预览（前 1500 字符）-----")
+            log(body[:1500])
+            log("----- 预览结束 -----")
+        if dry:
+            log("DRY_RUN=1，跳过推送。")
+            return 0
+        push_all(title, body)
+        return 0
+
+    # 台账瘦身：超过上限时按插入顺序丢弃最早的
+    if len(seen) > STATE_MAX:
+        seen = dict(list(seen.items())[-STATE_MAX:])
+    STATE.write_text(json.dumps(seen, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # ── 落盘可读结果：rss-digest/YYYY-MM-DD.md（每次运行追加一节，随仓库提交）──
     now_hk = datetime.now(HK)
@@ -275,7 +349,7 @@ def main():
         sec.append("| %s | %s | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, used))
     if hits:
         sec.append("\n")
-        for name, region, title, link, cn in hits:
+        for name, region, title, link, cn, _text in hits:
             sec.append("- **[%s]%s** %s  \n  <%s>" % (region, "★涉华 " if cn else " ", title, link))
     else:
         sec.append("\n本节无新增。\n")
@@ -293,10 +367,8 @@ def main():
 
     push = hits[:MAX_ITEMS_PUSH]
     title = "海关查获情报 %d 条（%s）" % (len(hits), datetime.now(HK).strftime("%m-%d %H:%M"))
-    body = "\n".join("- [%s]%s %s\n  %s" % (region, "★" if cn else "", t, l) for _n, region, t, l, cn in push)
-    if len(hits) > len(push):
-        body += "\n…（共 %d 条，日志里看全部）" % len(hits)
-
+    body, used_chars, truncated = build_body(push, per_item, total_limit)
+    log("推送正文：%d 字符%s" % (used_chars, "（超长已截断）" if truncated else ""))
     push_all(title, body)
     return 0
 
