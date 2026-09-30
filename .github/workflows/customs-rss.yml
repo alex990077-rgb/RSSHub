@@ -37,6 +37,9 @@ on:
             backfill_days:
                 description: '回补模式：抓最近 N 天建存档（不推送、条目全部记账），如 30'
                 default: ''
+            archive_month:
+                description: '存档文件名月份，如 2026-09（留空=当前月）'
+                default: ''
 
 permissions:
     contents: write
@@ -89,6 +92,7 @@ jobs:
                   TRANSLATE_BODY: ${{ vars.TRANSLATE_BODY || '1' }}
                   MIN_TEXT: ${{ vars.MIN_TEXT || '300' }}
                   BACKFILL_DAYS: ${{ github.event.inputs.backfill_days }}
+                  ARCHIVE_MONTH: ${{ github.event.inputs.archive_month }}
                   TEXT_LIMIT: ${{ vars.TEXT_LIMIT || '6000' }}
                   PUSH_LIMIT: ${{ vars.PUSH_LIMIT || '28000' }}
               run: python scripts/customs_rss.py
