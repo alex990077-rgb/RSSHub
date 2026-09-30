@@ -18,6 +18,7 @@
   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK   推送渠道
   FULLTEXT=1       推送带全文（默认 workflow 里为 1）
   LOOSE=1          放宽为「正文命中查获词」
+  NOTIFY_WHEN_EMPTY=1  本轮无新增也推一条"报平安"（默认不推）
   PUSH_TEST=N      测试推送：每源取前 N 条、强制全文、忽略去重、不写台账/digest
   SELFTEST=1       只自检推送通道
   DRY_RUN=1        抓取但不推送（日志打印正文预览）
@@ -271,6 +272,7 @@ def main():
     dry = os.environ.get("DRY_RUN") == "1"
     loose = os.environ.get("LOOSE") == "1"
     fulltext = os.environ.get("FULLTEXT") == "1"
+    notify_empty = os.environ.get("NOTIFY_WHEN_EMPTY") == "1"
     push_test = int(os.environ.get("PUSH_TEST") or 0)
     if push_test:
         fulltext = True                    # 测试推送一律带全文
@@ -421,7 +423,15 @@ def main():
     log("结果已写入：%s/rss-digest/%s" % (REPO_BLOB, day_file.name))
 
     if not hits:
-        log("无新增，未推送。")
+        if notify_empty and not dry:
+            # 心跳报平安：本轮无新增也推一条，便于确认三个时段都在跑
+            ok = sum(1 for s in stats if s[1] == "OK")
+            body = "本轮无新增。\n\n源状态（%d/%d 正常）：\n" % (ok, len(stats))
+            body += "\n".join("- %s %s 条目=%d" % (s[0], s[1], s[2]) for s in stats)
+            push_all("海关查获情报 0 条（%s）" % datetime.now(HK).strftime("%m-%d %H:%M"), body)
+            log("无新增，已发心跳推送（NOTIFY_WHEN_EMPTY=1）。")
+        else:
+            log("无新增，未推送。")
         return 0
 
     if dry:
