@@ -77,12 +77,8 @@ FEEDS = [
     {"name": "华尔街日报-商业", "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "max_age": 3, "lang": "en"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en"},
     {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en"},
-    # Central Asia Times：站点在 Cloudflare 后，/feed/ 返回 404 —— 下面几条是候选路径，跑通后只留一条
-    {"name": "CAT-1",          "region": "KZ", "kind": "rss",   "target": "https://www.centralasiatimes.com/rss/",            "max_age": 14, "lang": "en"},
-    {"name": "CAT-2",          "region": "KZ", "kind": "rss",   "target": "https://www.centralasiatimes.com/feed/rss/",       "max_age": 14, "lang": "en"},
-    {"name": "CAT-3",          "region": "KZ", "kind": "rss",   "target": "https://www.centralasiatimes.com/?feed=rss2",      "max_age": 14, "lang": "en"},
-    {"name": "CAT-4",          "region": "KZ", "kind": "rss",   "target": "https://www.centralasiatimes.com/news/feed/",      "max_age": 14, "lang": "en"},
-    {"name": "CAT-5",          "region": "KZ", "kind": "rss",   "target": "https://www.centralasiatimes.com/feed",            "max_age": 14, "lang": "en"},
+    # Central Asia Times：站点无可用 RSS（/feed/、/rss/ 均 404，其余路径被 Cloudflare 429）→ 走 Google News 站内检索
+    {"name": "Central Asia Times", "region": "KZ", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:centralasiatimes.com+when:7d&hl=en-US&gl=US&ceid=US:en", "max_age": 14, "lang": "en"},
     # —— 日文：朝日新闻官网 RSS 对境外有拦，改走 Google News 站内检索 ——
     {"name": "朝日新闻",       "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja"},
     # —— 越南文 ——
