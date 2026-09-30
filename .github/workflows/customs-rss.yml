@@ -1,0 +1,88 @@
+name: Customs RSS
+
+# 海关查获情报 · RSSHub 通道（全部只在本仓库内，不动其他任何文件）
+#
+#   本文件                              .github/workflows/customs-rss.yml
+#   抓取/过滤/去重/推送脚本              scripts/customs_rss.py
+#   去重台账（脚本自动生成并提交）        seen_rss.json
+#
+# 仓库变量（Settings → Secrets and variables → Actions → Variables）
+#   RSSHUB_BASE   自建或公共 RSSHub 地址；留空则用 https://rsshub.app
+# 仓库密钥（Secrets）
+#   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK
+#
+# 想完全不依赖公共实例：取消下面 services 段的注释，脚本用 RSSHUB_BASE=http://localhost:1200
+# （代价：每次运行拉取约 1GB 的 chromium-bundled 镜像，首次约 3~5 分钟）
+
+on:
+    schedule:
+        - cron: '10 23 * * *' # UTC 23:10 = 北京 07:10
+        - cron: '10 7 * * *' # UTC 07:10 = 北京 15:10
+    workflow_dispatch:
+        inputs:
+            base:
+                description: '临时指定 RSSHub 地址（留空=用变量或默认实例）'
+                default: ''
+            dry_run:
+                description: '只抓取不推送（1=是）'
+                default: ''
+            selftest:
+                description: '只自检推送通道，不抓取（1=是）'
+                default: ''
+
+permissions:
+    contents: write
+
+concurrency:
+    group: customs-rss
+    cancel-in-progress: false
+
+jobs:
+    run:
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        # services:
+        #     rsshub:
+        #         image: diygod/rsshub:chromium-bundled
+        #         ports:
+        #             - 1200:1200
+        steps:
+            - name: 检出仓库（本仓库历史很大，只取最新一层 + 只取需要的路径）
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 1
+                  sparse-checkout: |
+                      scripts
+                      seen_rss.json
+                  sparse-checkout-cone-mode: false
+
+            - name: 安装 Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+
+            - name: 抓取 + 关键词过滤 + 去重 + 推送
+              env:
+                  RSSHUB_BASE: ${{ github.event.inputs.base || vars.RSSHUB_BASE }}
+                  SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+                  PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+                  PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
+                  WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}
+                  DRY_RUN: ${{ github.event.inputs.dry_run }}
+                  SELFTEST: ${{ github.event.inputs.selftest }}
+                  LOOSE: ${{ vars.LOOSE }}
+              run: python scripts/customs_rss.py
+
+            - name: 保存去重台账（跨天不重复推送）
+              if: always()
+              continue-on-error: true
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git add seen_rss.json 2>/dev/null || true
+                  if git diff --cached --quiet; then
+                    echo "无状态变化，跳过提交"
+                  else
+                    git commit -m "state(rss): $(TZ='Asia/Hong_Kong' date '+%F %H:%M')"
+                    git push
+                  fi
