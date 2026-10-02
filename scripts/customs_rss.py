@@ -255,7 +255,11 @@ def http_get(url):
 # ── 外文 → 中文翻译（云端免费接口，无需 API key）──────────────────────────
 # 翻译前把易误译的机构缩写展开（否则 Google 会把菲律宾 BOC 译成「中国银行」）
 TRANS_FIX = [
-    (re.compile(r"\bBOC\b"), "Bureau of Customs"),
+    # 金额简写先展开（否则 "P6.7-M" 会被机翻成"6.7米"）
+    (re.compile(r"\bP(\d+(?:\.\d+)?)\s*-\s*M\b", re.I), r"\1 million pesos"),
+    (re.compile(r"\bP(\d+(?:\.\d+)?)\s*-\s*B\b", re.I), r"\1 billion pesos"),
+    # 机构缩写（加 re.I：BoC/BOC 都可能出现；BOC 也被 Google 误译成「中国银行/加拿大央行」）
+    (re.compile(r"\bBOC\b", re.I), "Bureau of Customs"),
     (re.compile(r"\bMICP\b"), "Manila International Container Port"),
     (re.compile(r"\bPDEA\b"), "Philippine Drug Enforcement Agency"),
     (re.compile(r"\bNAIA\b"), "Ninoy Aquino International Airport"),
