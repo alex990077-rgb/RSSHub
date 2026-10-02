@@ -81,11 +81,8 @@ FEEDS = [
     {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en", "domain": "ustr.gov"},
     # —— 菲律宾（RSSHub 无覆盖；GMA 官方 RSS + Google News 站内检索；摘要通道 min_text=0）——
-    {"name": "GMA News",       "region": "PH", "kind": "rss",   "target": "https://data.gmanetwork.com/gno/rss/news/feed.xml", "max_age": 3, "lang": "en", "domain": "gmanetwork.com", "min_text": 0},
-    {"name": "Philstar",       "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:philstar.com+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "philstar.com", "min_text": 0},
-    {"name": "PNA 菲通社",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:pna.gov.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "pna.gov.ph", "min_text": 0},
-    {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0},
-    {"name": "Daily Tribune",  "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:tribune.net.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "tribune.net.ph", "min_text": 0},
+    {"name": "GMA News",       "region": "PH", "kind": "rss",   "target": "https://data.gmanetwork.com/gno/rss/news/feed.xml", "max_age": 3, "lang": "en", "domain": "gmanetwork.com", "min_text": 0, "require_cn": True},
+    {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0, "require_cn": True},
     # —— 只有摘要/导语的源（按用户要求加回：接受摘要，标注"摘要"）——
     {"name": "路透社",          "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+(China+customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en", "domain": "reuters.com", "min_text": 0},
     {"name": "朝日新闻",        "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja", "domain": "asahi.com", "min_text": 0},
@@ -603,7 +600,7 @@ def main():
             log("[%s] 抓取失败：%s" % (name, " | ".join(base_errors[-len(base_list):])[:200]))
             continue
         got = len(items)
-        n_new = n_old = n_short = 0
+        n_new = n_old = n_short = n_nocn = 0
         if push_test:
             # 测试：不看台账、不看时效；优先取命中规则的条目，没有命中就取前 N 条兜底
             matched = []
@@ -629,6 +626,10 @@ def main():
             line = classify(title, desc, loose)
             if not line:
                 continue
+            # 该源要求涉华：标题或摘要里必须出现中国指向词（否则是本地海关新闻）
+            if feed.get("require_cn") and not B_CHINA.search(title + " " + desc):
+                n_nocn += 1
+                continue
             # 无全文（只有导语/摘要）→ 丢弃、不记账，符合"没有全文就去掉"
             if len(desc) < feed.get("min_text", min_text):
                 n_short += 1
@@ -638,11 +639,11 @@ def main():
             hits.append({"name": name, "region": region, "title": title, "link": link,
                          "cn": bool(B_CHINA.search(title + " " + desc)), "text": desc, "line": line,
                          "pub": pub.astimezone(HK).strftime("%Y-%m-%d") if pub else ""})
-        stats.append((name, "OK", got, n_new, n_old, n_short, used))
+        stats.append((name, "OK", got, n_new, n_old, n_short + n_nocn, used))
 
     log("\n源状态：")
     for name, status, got, n_new, n_old, n_short, used in stats:
-        log("  %-16s %-5s 条目=%-5d 命中=%-3d 过期=%-4d 无全文=%-4d 源=%s"
+        log("  %-16s %-5s 条目=%-5d 命中=%-3d 过期=%-4d 丢弃=%-4d 源=%s"
             % (name, status, got, n_new, n_old, n_short, used[:18]))
 
     # ── 外文翻译（回补时只翻标题，避免上千次请求）──
@@ -712,7 +713,7 @@ def main():
         lines = ["# 海关查获 & 涉华出口风险 · %s 存档\n" % month,
                  "> 回补窗口：最近 %d 天（截至 %s，北京时间）｜源 %d 个" % (backfill, now_hk.strftime("%Y-%m-%d %H:%M"), len(FEEDS)),
                  "> 本存档条目已**全部写入去重台账** `seen_rss.json`，之后任何时段都不会再推送；存档仅供回溯。\n",
-                 "## 源覆盖（feed 现存量）\n", "| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 |", "| --- | --- | --- | --- | --- | --- |"]
+                 "## 源覆盖（feed 现存量）\n", "| 源 | 状态 | 条目 | 命中 | 过期 | 丢弃 |", "| --- | --- | --- | --- | --- | --- |"]
         for name, status, got, n_new, n_old, n_short, _used in stats:
             lines.append("| %s | %s | %d | %d | %d | %d |" % (name, status, got, n_new, n_old, n_short))
         lines.append("\n## A. 全文条目（feed 现存量，%d 条）\n" % len(hits))
@@ -799,7 +800,7 @@ def main():
     if loose:
         flags.append("宽松模式")
     sec.append("\n## %s ｜ 新增 %d 条%s\n" % (now_hk.strftime("%H:%M"), len(hits), ("（%s）" % "，".join(flags)) if flags else ""))
-    sec.append("\n| 源 | 状态 | 条目 | 命中 | 过期 | 无全文 | 源站 |")
+    sec.append("\n| 源 | 状态 | 条目 | 命中 | 过期 | 丢弃 | 源站 |")
     sec.append("| --- | --- | --- | --- | --- | --- | --- |")
     for name, status, got, n_new, n_old, n_short, used in stats:
         sec.append("| %s | %s | %d | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, n_short, used))
