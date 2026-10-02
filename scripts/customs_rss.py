@@ -86,6 +86,15 @@ FEEDS = [
     {"name": "PNA 菲通社",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:pna.gov.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "pna.gov.ph", "min_text": 0},
     {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0},
     {"name": "Daily Tribune",  "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:tribune.net.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "tribune.net.ph", "min_text": 0},
+    # —— 只有摘要/导语的源（按用户要求加回：接受摘要，标注"摘要"）——
+    {"name": "路透社",          "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+(China+customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en", "domain": "reuters.com", "min_text": 0},
+    {"name": "朝日新闻",        "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja", "domain": "asahi.com", "min_text": 0},
+    {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en", "domain": "thestar.com.my", "min_text": 0},
+    {"name": "Central Asia Times", "region": "KZ", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:centralasiatimes.com+when:7d&hl=en-US&gl=US&ceid=US:en", "max_age": 14, "lang": "en", "domain": "centralasiatimes.com", "min_text": 0},
+    {"name": "华尔街日报-世界",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",     "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0},
+    {"name": "华尔街日报-商业",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0},
+    {"name": "VietnamNet-时事", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/thoi-su.rss",  "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0},
+    {"name": "VietnamNet-国际", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/the-gioi.rss", "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0},
 ]
 
 # 已按"没有全文就去掉"移除的源（保留记录，便于日后回加）：
@@ -244,6 +253,23 @@ def http_get(url):
 
 
 # ── 外文 → 中文翻译（云端免费接口，无需 API key）──────────────────────────
+# 翻译前把易误译的机构缩写展开（否则 Google 会把菲律宾 BOC 译成「中国银行」）
+TRANS_FIX = [
+    (re.compile(r"\bBOC\b"), "Bureau of Customs"),
+    (re.compile(r"\bMICP\b"), "Manila International Container Port"),
+    (re.compile(r"\bPDEA\b"), "Philippine Drug Enforcement Agency"),
+    (re.compile(r"\bNAIA\b"), "Ninoy Aquino International Airport"),
+    (re.compile(r"\bNBI\b"), "National Bureau of Investigation"),
+    (re.compile(r"\bBI\b(?=\s+(?:Lookout|Immigration))"), "Bureau of Immigration"),
+]
+
+
+def normalize_for_translation(text):
+    for rx, rep_s in TRANS_FIX:
+        text = rx.sub(rep_s, text)
+    return text
+
+
 def needs_translation(text):
     """判断是否需要翻成中文：含假名/韩文一定要翻；汉字占比低（英/越等拉丁文）也翻。"""
     if not text:
@@ -403,7 +429,8 @@ def build_body(hits, per_item, total_limit):
         head = "%s%s" % ("★涉华 " if h["cn"] else "", zh or h["title"])
         if zh:
             head += "（原文：%s）" % h["title"]
-        piece = ["【%s·%s】%s" % (h["region"], h["line"], head), h["link"]]
+        tag = "·摘要" if len(h.get("text") or "") < 300 else ""
+        piece = ["【%s·%s%s】%s" % (h["region"], h["line"], tag, head), h["link"]]
         if h["text"]:
             text = h["text"]
             if len(text) > per_item:
@@ -619,12 +646,12 @@ def main():
     if translate and hits:
         for h in hits[:MAX_ITEMS_PUSH]:
             if needs_translation(h["title"]):
-                zh = translate_text(h["title"])
+                zh = translate_text(normalize_for_translation(h["title"]))
                 if zh and zh.replace(" ", "") != h["title"].replace(" ", ""):
                     h["zh_title"] = zh
                     translated_t += 1
             if translate_body and not backfill and h["text"] and needs_translation(h["text"]):
-                zh_body = translate_text(h["text"][:per_item])
+                zh_body = translate_text(normalize_for_translation(h["text"])[:per_item])
                 if zh_body:
                     h["orig_text"] = h["text"]
                     h["text"] = zh_body
