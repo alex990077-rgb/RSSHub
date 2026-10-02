@@ -81,17 +81,17 @@ FEEDS = [
     {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en", "domain": "ustr.gov"},
     # —— 菲律宾（RSSHub 无覆盖；GMA 官方 RSS + Google News 站内检索；摘要通道 min_text=0）——
-    {"name": "GMA News",       "region": "PH", "kind": "rss",   "target": "https://data.gmanetwork.com/gno/rss/news/feed.xml", "max_age": 3, "lang": "en", "domain": "gmanetwork.com", "min_text": 0, "require_cn": True},
+    {"name": "GMA News",       "region": "PH", "kind": "rss",   "target": "https://data.gmanetwork.com/gno/rss/news/feed.xml", "max_age": 3, "lang": "en", "domain": "gmanetwork.com", "min_text": 0, "require_cn": True, "fetch_full": True},
     {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0, "require_cn": True},
     # —— 只有摘要/导语的源（按用户要求加回：接受摘要，标注"摘要"）——
     {"name": "路透社",          "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+(China+customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en", "domain": "reuters.com", "min_text": 0},
-    {"name": "朝日新闻",        "region": "JP", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:asahi.com+%E4%B8%AD%E5%9B%BD+(%E7%A8%8E%E9%96%A2+OR+%E5%AF%86%E8%BC%B8+OR+%E8%BC%B8%E5%87%BA%E7%AE%A1%E7%90%86+OR+%E5%8D%8A%E5%B0%8E%E4%BD%93)&hl=ja&gl=JP&ceid=JP:ja", "max_age": 3, "lang": "ja", "domain": "asahi.com", "min_text": 0},
+    {"name": "朝日新闻",        "region": "JP", "kind": "rsshub", "target": "/asahi/national", "max_age": 3, "lang": "ja", "domain": "asahi.com"},
     {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en", "domain": "thestar.com.my", "min_text": 0},
     {"name": "Central Asia Times", "region": "KZ", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:centralasiatimes.com+when:7d&hl=en-US&gl=US&ceid=US:en", "max_age": 14, "lang": "en", "domain": "centralasiatimes.com", "min_text": 0},
-    {"name": "华尔街日报-世界",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",     "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0},
-    {"name": "华尔街日报-商业",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0},
-    {"name": "VietnamNet-时事", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/thoi-su.rss",  "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0},
-    {"name": "VietnamNet-国际", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/the-gioi.rss", "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0},
+    {"name": "华尔街日报-世界",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",     "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0, "fetch_full": True},
+    {"name": "华尔街日报-商业",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/WSJcomUSBusiness", "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0, "fetch_full": True},
+    {"name": "VietnamNet-时事", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/thoi-su.rss",  "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0, "fetch_full": True},
+    {"name": "VietnamNet-国际", "region": "VN", "kind": "rss",   "target": "https://vietnamnet.vn/rss/the-gioi.rss", "max_age": 3, "lang": "vi", "domain": "vietnamnet.vn", "min_text": 0, "fetch_full": True},
 ]
 
 # 已按"没有全文就去掉"移除的源（保留记录，便于日后回加）：
@@ -311,6 +311,26 @@ def translate_text(text, limit=1600):
         except Exception:                   # noqa: BLE001 — 翻译失败就保留原文该段
             out.append(c)
     return "".join(out)
+
+
+def extract_article(url):
+    """命中后按链接补抓正文（只对 kind=rss 且标了 fetch_full 的源）。失败返回空串。"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml"})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            raw = resp.read(900000).decode("utf-8", "replace")
+    except Exception:                       # noqa: BLE001
+        return ""
+    txt = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav|form)[^>]*>.*?</\1>", " ", raw)
+    m = re.search(r"(?is)<body[^>]*>(.*?)</body>", txt)
+    if m:
+        txt = m.group(1)
+    txt = re.sub(r"(?is)<br\s*/?>|</p>|</div>|</h[1-6]>", "\n", txt)
+    txt = re.sub(r"(?s)<[^>]+>", " ", txt)
+    txt = html.unescape(txt)
+    txt = re.sub(r"[ \t\u00a0]+", " ", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
 
 
 def clean_text(raw):
@@ -645,6 +665,20 @@ def main():
     for name, status, got, n_new, n_old, n_short, used in stats:
         log("  %-16s %-5s 条目=%-5d 命中=%-3d 过期=%-4d 丢弃=%-4d 源=%s"
             % (name, status, got, n_new, n_old, n_short, used[:18]))
+
+    # ── 命中后补抓正文：只对"有真实文章链接"的源（feed 只给摘要时才有意义）──
+    if not backfill and hits:
+        feed_map = {f["name"]: f for f in FEEDS}
+        n_full = 0
+        for h in hits[:MAX_ITEMS_PUSH]:
+            if not feed_map.get(h["name"], {}).get("fetch_full") or len(h["text"]) >= 600:
+                continue
+            body = extract_article(h["link"])
+            if len(body) > max(400, len(h["text"]) + 200):
+                h["text"] = body
+                h["full_ok"] = True
+                n_full += 1
+        log("补抓正文成功 %d 条（仅限有真实文章链接的源）" % n_full)
 
     # ── 外文翻译（回补时只翻标题，避免上千次请求）──
     translated_t = translated_b = 0
