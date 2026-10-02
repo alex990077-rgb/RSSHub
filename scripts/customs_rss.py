@@ -85,7 +85,7 @@ FEEDS = [
     {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0, "require_cn": True},
     # —— 只有摘要/导语的源（按用户要求加回：接受摘要，标注"摘要"）——
     {"name": "路透社",          "region": "US", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:reuters.com+(China+customs+OR+smuggling+OR+%22export+control%22+OR+tariff)&hl=en-US&gl=US&ceid=US:en", "max_age": 3, "lang": "en", "domain": "reuters.com", "min_text": 0},
-    {"name": "朝日新闻",        "region": "JP", "kind": "rsshub", "target": "/asahi/national", "max_age": 3, "lang": "ja", "domain": "asahi.com"},
+    {"name": "朝日新闻",        "region": "JP", "kind": "rsshub", "target": "/asahi/national", "max_age": 3, "lang": "ja", "domain": "asahi.com", "prefer": "ktachibana"},
     {"name": "The Star",       "region": "MY", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:thestar.com.my+when:2d&hl=en-MY&gl=MY&ceid=MY:en", "max_age": 3, "lang": "en", "domain": "thestar.com.my", "min_text": 0},
     {"name": "Central Asia Times", "region": "KZ", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:centralasiatimes.com+when:7d&hl=en-US&gl=US&ceid=US:en", "max_age": 14, "lang": "en", "domain": "centralasiatimes.com", "min_text": 0},
     {"name": "华尔街日报-世界",  "region": "US", "kind": "rss",   "target": "https://feeds.content.dowjones.io/public/rss/RSSWorldNews",     "max_age": 3, "lang": "en", "domain": "wsj.com", "min_text": 0, "fetch_full": True},
@@ -591,6 +591,9 @@ def main():
         items, used, err = None, "", None
         base_errors = []
         base_list = list(bases) if kind == "rsshub" else [""]
+        prefer = feed.get("prefer")
+        if prefer:                          # 某些路由只挂在特定实例上（如 /asahi 只有 ktachibana 有）
+            base_list.sort(key=lambda b: (prefer not in b,))
         # 公共实例会 429 限流，限流通常几十秒就恢复 → 全失败时退避后整轮重试一次
         for attempt in range(2):
             for base in base_list:
