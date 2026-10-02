@@ -53,11 +53,14 @@ MAX_ITEMS_PUSH = 40       # 单次推送条数上限
 GN_TERMS_ZH = "海关 OR 查获 OR 走私 OR 关税 OR 出口管制 OR 中国 OR 无人机 OR 稀土 OR 芯片"
 GN_TERMS_EN = 'customs OR seized OR smuggling OR tariff OR "export control" OR China OR drone OR "rare earth"'
 
-# 实例兜底顺序：公共实例会限流/封 IP，某个不通自动换下一个
-# （rsshub.app 在 GitHub Actions 上实测 403；自建容器用 http://localhost:1200）
+# 实例兜底顺序：公共实例会限流/封 IP，某个不通自动换下一个。
+# 已移除 rsshub.app —— 它在 GitHub Actions 上对所有请求固定返回 403，只会掩盖真实原因（429/超时）。
 DEFAULT_FALLBACK = (
-    "https://rsshub.liumingye.cn,https://rsshub.ktachibana.party,http://localhost:1200,https://rsshub.app"
+    "https://rsshub.liumingye.cn,https://rsshub.ktachibana.party,http://localhost:1200"
 )
+# 三个推送时段（北京时间）；配合 workflow 里的主+备双 cron 使用
+SLOTS = ("07:30", "15:10", "22:10")
+BACKOFF_SECONDS = 20      # 全部实例都失败（多为 429 限流）时的退避秒数，然后整轮重试一次
 
 # ── 源清单：(名称, 地区, RSSHub 路由, 时效天数) ───────────────────────────────
 # 全部为境外/外媒（按你的要求已移除中国大陆源：中國海關雜誌、海關總署）
@@ -77,6 +80,12 @@ FEEDS = [
     {"name": "彭博社-政治",    "region": "US", "kind": "rsshub", "target": "/bloomberg/politics",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
     {"name": "彭博社-商业",    "region": "US", "kind": "rsshub", "target": "/bloomberg/business",          "max_age": 3, "lang": "en", "domain": "bloomberg.com"},
     {"name": "USTR",           "region": "US", "kind": "rss",   "target": "https://ustr.gov/rss.xml",       "max_age": 14, "lang": "en", "domain": "ustr.gov"},
+    # —— 菲律宾（RSSHub 无覆盖；GMA 官方 RSS + Google News 站内检索；摘要通道 min_text=0）——
+    {"name": "GMA News",       "region": "PH", "kind": "rss",   "target": "https://data.gmanetwork.com/gno/rss/news/feed.xml", "max_age": 3, "lang": "en", "domain": "gmanetwork.com", "min_text": 0},
+    {"name": "Philstar",       "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:philstar.com+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "philstar.com", "min_text": 0},
+    {"name": "PNA 菲通社",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:pna.gov.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "pna.gov.ph", "min_text": 0},
+    {"name": "BOC 菲海关",      "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:customs.gov.ph+when:7d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 7, "lang": "en", "domain": "customs.gov.ph", "min_text": 0},
+    {"name": "Daily Tribune",  "region": "PH", "kind": "gnews", "target": "https://news.google.com/rss/search?q=site:tribune.net.ph+when:3d&hl=en-PH&gl=PH&ceid=PH:en", "max_age": 3, "lang": "en", "domain": "tribune.net.ph", "min_text": 0},
 ]
 
 # 已按"没有全文就去掉"移除的源（保留记录，便于日后回加）：
@@ -91,7 +100,8 @@ KW = {
         "A": (
             r"查[獲获]|檢[獲获]|检[獲获]|緝[獲获]|缉[獲获]|截[獲获]|破[獲获]|偵破|侦破|"
             r"扣留|扣押|沒收|没收|收繳|收缴|查扣|走私|私[煙烟]|[緝缉]私|侵[權权]|假冒|盜版|盗版|"
-            r"固[廢废]|洋垃圾|退[運运]|瞞報|瞒报|逃[稅税]|低報|低报|水[貨货]|販毒|贩毒|洗黑[錢钱]"
+            r"固[廢废]|洋垃圾|退[運运]|瞞報|瞒报|逃[稅税]|低報|低报|水[貨货]|販毒|贩毒|洗黑[錢钱]|"
+            r"查[處处]|查[辦办]|截查|被查|查[緝缉]"
         ),
         "B": (
             r"中國|中国|中方|中企|國企|国企|中資|中资|中國製造|中国制造|Made in China|Chinese|"
@@ -104,7 +114,8 @@ KW = {
             r"槍械|枪械|炸藥|炸药|化學品|化学品|前體|前体|易制毒|芬太尼|核材料|鈾|铀|離心機|离心机|"
             r"衛星|卫星|雷達|雷达|夜視|夜视|防彈|防弹|頭盔|头盔|軍服|军服|制裁|規避|规避|洗產地|洗产地|"
             r"原產地|原产地|轉運|转运|轉口|转口|關稅|关税|反傾銷|反倾销|強迫勞動|强迫劳动|供應鏈|供应链|"
-            r"出口退[稅税]|報關|报关|清關|清关|跨境電商|跨境电商"
+            r"出口退[稅税]|報關|报关|清關|清关|跨境電商|跨境电商|"
+            r"煙花|烟花|爆竹|煙火爆竹|烟花爆竹|虛假申報|虚假申报|申報不實|申报不实|偽報|伪报"
         ),
         "D": r"胡塞|真主黨|真主党|哈瑪斯|哈马斯|伊朗|朝鮮|朝鲜|俄羅斯|俄罗斯|受制裁|繞道|绕道|第三國|第三国|黑市|掮客|中介|網店|网店|電商|电商|公開販售|公开贩售",
         "T": r"出口|进口|進口|貨物|货物|貨運|贸易|貿易|商品|转运|轉運|转口|轉口|走私|報關|报关|清關|清关|订单|訂單|採購|采购|供應鏈|供应链",
@@ -124,7 +135,7 @@ KW = {
     },
     "en": {
         "A": (
-            r"seized|seizure|confiscat|smuggl|contraband|counterfeit|infringing|undeclared|"
+            r"seiz|confiscat|smuggl|contraband|counterfeit|infringing|undeclared|crackdown|"
             r"misdeclar|evasion|forced labo|laundering|trafficking|illicit trade"
         ),
         "B": r"China|Chinese|Beijing|Hong Kong|Made in China|Shenzhen|Guangzhou|Yiwu|Shanghai|Renminbi|yuan|mainland",
@@ -134,13 +145,15 @@ KW = {
             r"explosive|precursor|fentanyl|nuclear|uranium|centrifuge|satellite|radar|night vision|body armor|"
             r"helmet|military uniform|sanction|circumvent|transshipment|trans-shipment|origin fraud|tariff|"
             r"anti-dumping|antidumping|export tax rebate|customs broker|clearance|cross-border e-commerce|"
-            r"military equipment|military drone|military technology|defense contractor|military export"
+            r"military equipment|military drone|military technology|defense contractor|military export|"
+            r"firecracker|fireworks|pyrotechnic"
         ),
         "D": r"Houthi|Hezbollah|Hamas|Iran|North Korea|Russia|black market|broker|intermediary|online shop|e-commerce|third country",
         "T": r"export|import|cargo|shipment|trade|goods|supply|procure|order|consignment|container|port|exports",
         "E": (
             r"customs|border|port|airport|harbou?r|cargo|container|shipment|freight|vessel|warehouse|"
-            r"export|import|trade|declaration|tariff|bonded|quarantine|smuggl|contraband|consignment"
+            r"export|import|trade|declaration|tariff|bonded|quarantine|smuggl|contraband|consignment|"
+            r"bureau of customs|BOC|MICP|Philippine"
         ),
         "N": r"money mule|shoplifting|domestic violence|armed robbery|hit-and-run|car crash|carjacking|stalker|drunk driving",
     },
@@ -211,6 +224,16 @@ CORE_FILTER = (
 
 def log(msg):
     print(msg, flush=True)
+
+
+def mark_slot(slots_done, slot_key, path):
+    """记录某个时段已完成（供备用 cron 秒退），并只保留最近 60 条。"""
+    if not slot_key:
+        return
+    slots_done[slot_key] = datetime.now(HK).strftime("%Y-%m-%d %H:%M")
+    if len(slots_done) > 60:
+        slots_done = dict(sorted(slots_done.items())[-60:])
+    path.write_text(json.dumps(slots_done, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def http_get(url):
@@ -473,6 +496,32 @@ def main():
         return 1 if push_all("海关RSS自检（%s）" % datetime.now(HK).strftime("%m-%d %H:%M"),
                              "收到这条说明推送通道已配好；接下来每天 07:30 / 15:10 / 22:10（北京）自动跑。") else 0
 
+    # ── 时段闸门 ──
+    # 作用：cron-job.org 的外部 dispatch（workflow_dispatch）跑完后会记录"该时段已完成"；
+    #       万一 GitHub 内置 schedule 也触发了（兜底路径），它发现时段已完成就秒退，不重复抓取/推送。
+    # 手工触发永远照常运行（只记账、不秒退），方便随时测。
+    event_name = (os.environ.get("EVENT_NAME") or "").strip()
+    slots_path = ROOT / "slots.json"
+    slots_done = {}
+    if slots_path.exists():
+        try:
+            slots_done = json.loads(slots_path.read_text(encoding="utf-8"))
+        except Exception:                   # noqa: BLE001
+            slots_done = {}
+    now_hk = datetime.now(HK)
+    day_key = now_hk.strftime("%Y-%m-%d")
+    cur_hm = now_hk.strftime("%H:%M")
+    # 只关心"最近一个已过时段"：它已服务过就说明当前这轮是重复触发
+    passed = [s for s in SLOTS if cur_hm >= s]
+    due_slot = passed[-1] if passed else None
+    if event_name == "schedule" and not (backfill or push_test or dry):
+        if due_slot is None or ("%s_%s" % (day_key, due_slot)) in slots_done:
+            log("定时触发：最近时段 %s 已服务过（今日 %s），秒退（未消耗抓取预算）。"
+                % (due_slot or "无", "/".join(SLOTS)))
+            return 0
+        log("定时触发：本次负责 %s 时段（%s）" % (due_slot, day_key))
+    slot_key = ("%s_%s" % (day_key, due_slot)) if due_slot else None
+
     seen = {}
     if STATE.exists():
         try:
@@ -492,23 +541,35 @@ def main():
             max_age = backfill                       # 回补：按时效窗口放宽（如 30 天 = 整个 9 月）
         # rsshub 源走多实例兜底；rss/gnews 直连只有一个 URL
         items, used, err = None, "", None
-        for base in (list(bases) if kind == "rsshub" else [""]):
-            if time.monotonic() - t0 > budget:
-                err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余源" % budget)
+        base_errors = []
+        base_list = list(bases) if kind == "rsshub" else [""]
+        # 公共实例会 429 限流，限流通常几十秒就恢复 → 全失败时退避后整轮重试一次
+        for attempt in range(2):
+            for base in base_list:
+                if time.monotonic() - t0 > budget:
+                    err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余源" % budget)
+                    break
+                try:
+                    url = feed_url(base, target, fulltext, limit=40 if backfill else None) if kind == "rsshub" else target
+                    items = parse_items(http_get(url))
+                    used = (base or urllib.parse.urlparse(target).netloc).replace("https://", "").replace("http://", "")[:22]
+                    if kind == "rsshub" and base != bases[0]:   # 把刚成功的实例提到最前
+                        bases.remove(base)
+                        bases.insert(0, base)
+                    break
+                except Exception as exc:        # noqa: BLE001 — 换下一个实例/放弃
+                    err, items = exc, None
+                    tag = (base or target).replace("https://", "").replace("http://", "")[:22]
+                    msg = "HTTP %s" % exc.code if getattr(exc, "code", None) else str(exc)[:28]
+                    base_errors.append("%s=%s" % (tag, msg))
+            if items is not None:
                 break
-            try:
-                url = feed_url(base, target, fulltext, limit=40 if backfill else None) if kind == "rsshub" else target
-                items = parse_items(http_get(url))
-                used = (base or urllib.parse.urlparse(target).netloc).replace("https://", "").replace("http://", "")[:22]
-                if kind == "rsshub" and base != bases[0]:   # 把刚成功的实例提到最前
-                    bases.remove(base)
-                    bases.insert(0, base)
-                break
-            except Exception as exc:        # noqa: BLE001 — 换下一个实例/放弃
-                err, items = exc, None
+            if attempt == 0 and kind == "rsshub" and time.monotonic() - t0 + BACKOFF_SECONDS < budget:
+                log("[%s] 全部实例失败（%s），退避 %ds 后重试一次" % (name, " | ".join(base_errors[-len(base_list):]), BACKOFF_SECONDS))
+                time.sleep(BACKOFF_SECONDS)
         if items is None:
             stats.append((name, "FAIL", 0, 0, 0, 0, "-"))
-            log("[%s] 抓取失败：%s" % (name, str(err)[:120]))
+            log("[%s] 抓取失败：%s" % (name, " | ".join(base_errors[-len(base_list):])[:200]))
             continue
         got = len(items)
         n_new = n_old = n_short = 0
@@ -538,7 +599,7 @@ def main():
             if not line:
                 continue
             # 无全文（只有导语/摘要）→ 丢弃、不记账，符合"没有全文就去掉"
-            if len(desc) < min_text:
+            if len(desc) < feed.get("min_text", min_text):
                 n_short += 1
                 continue
             seen[link] = today
@@ -734,6 +795,8 @@ def main():
             log("无新增，已发心跳推送（NOTIFY_WHEN_EMPTY=1）。")
         else:
             log("无新增，未推送。")
+        if not dry:
+            mark_slot(slots_done, slot_key, slots_path)
         return 0
 
     push = hits[:MAX_ITEMS_PUSH]
@@ -750,6 +813,7 @@ def main():
 
     log("推送正文：%d 字符%s" % (used_chars, "（超长已截断）" if truncated else ""))
     push_all(title, body)
+    mark_slot(slots_done, slot_key, slots_path)
     return 0
 
 if __name__ == "__main__":
