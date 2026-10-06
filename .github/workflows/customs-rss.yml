@@ -9,7 +9,7 @@ name: Customs RSS
 # 仓库变量（Settings → Secrets and variables → Actions → Variables）
 #   RSSHUB_BASE      自建/公共 RSSHub 地址；留空 = 优先用下面自建实例，起不来就用内置兜底链
 #   RSSHUB_FALLBACK  覆盖内置兜底链（逗号分隔）
-#   SELFHOST_RSSHUB  设成 0 可关掉「自建 RSSHub 实例」这一步（默认开）
+#   SELFHOST_RSSHUB  控制「自建 RSSHub 实例」那一步：留空或填 1 = 开（默认），填 0 = 关
 #   FETCH_WORKERS / FETCH_TIMEOUT / FETCH_DEADLINE  抓取并发/单请求超时/总预算（默认 8 / 25 / 900）
 # 仓库密钥（Secrets）
 #   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK
@@ -89,9 +89,12 @@ jobs:
 
             # 自建 RSSHub：免限流、路由最全（公共实例经常 429/503/超时）。
             # continue-on-error：拉镜像或启动失败都不影响后面，脚本会自动回落公共实例。
+            # 开关：变量留空或填 1 = 开；填 0 = 关。
+            # 注意别写成 `vars.SELFHOST_RSSHUB != '0'` —— 变量没设时 GitHub 会把 null 当 0，
+            # 与 '0' 松散相等，条件恒为 false，这步就被静默跳过（已踩过）。
             - name: 启动自建 RSSHub 实例（可选，失败自动回落公共实例）
               id: rsshub
-              if: ${{ vars.SELFHOST_RSSHUB != '0' }}
+              if: ${{ vars.SELFHOST_RSSHUB == '' || vars.SELFHOST_RSSHUB == '1' }}
               continue-on-error: true
               run: |
                   docker run -d --name rsshub -p 1200:1200 diygod/rsshub:chromium-bundled
