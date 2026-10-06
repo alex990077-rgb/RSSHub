@@ -7,19 +7,36 @@ name: Customs RSS
 #   去重台账（脚本自动生成并提交）        seen_rss.json
 #
 # 仓库变量（Settings → Secrets and variables → Actions → Variables）
-#   RSSHUB_BASE   自建或公共 RSSHub 地址；留空则用 https://rsshub.app
+#   RSSHUB_BASE      自建/公共 RSSHub 地址；留空 = 优先用下面自建实例，起不来就用内置兜底链
+#   RSSHUB_FALLBACK  覆盖内置兜底链（逗号分隔）
+#   SELFHOST_RSSHUB  设成 0 可关掉「自建 RSSHub 实例」这一步（默认开）
+#   FETCH_WORKERS / FETCH_TIMEOUT / FETCH_DEADLINE  抓取并发/单请求超时/总预算（默认 8 / 25 / 900）
 # 仓库密钥（Secrets）
 #   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK
 #
-# 想完全不依赖公共实例：取消下面 services 段的注释，脚本用 RSSHUB_BASE=http://localhost:1200
-# （代价：每次运行拉取约 1GB 的 chromium-bundled 镜像，首次约 3~5 分钟）
+# ── 触发方式：只有外部调度（2026-10-06 起）────────────────────────────────────
+# GitHub 内置 on.schedule 已彻底移除：本仓库实测 schedule 触发不稳定，还会和外部调度重复跑。
+# 定时统一交给 cron-job.org 调 workflow_dispatch API 触发：
+#   https://console.cron-job.org/jobs
+# 三个任务（时区均选 Asia/Shanghai，请求方法 POST）：
+#   7:30  / 15:10 / 22:10
+# URL（三个任务相同）：
+#   https://api.github.com/repos/alex990077-rgb/RSSHub/actions/workflows/customs-rss.yml/dispatches
+# Headers：Authorization: Bearer <细粒度PAT，Actions: Read and write>
+#          Accept: application/vnd.github+json
+#          X-GitHub-Api-Version: 2022-11-28
+#          Content-Type: application/json
+# Body：   {"ref":"master","inputs":{}}
+# 成功返回 204 No Content（dispatch 接口正常就不返回 body）。
+# 手动测试：Actions 页面点 Run workflow；完整步骤/排错见 rsshub-cloud/cron-job.org-配置指南.md
+#
+# ── 抓取链路（2026-10-06 改）──────────────────────────────────────────────────
+# 阶段① 直连源（kind=rss/gnews，各自独立域名）并行抓取 —— 先拿完，RSSHub 再慢也饿不死它们；
+# 阶段② RSSHub 源串行抓取 + 多实例兜底（串行是为了不并发触发公共实例 429）。
+# 想不依赖公共实例：默认会先在本机起一个 RSSHub（下一步），脚本优先用它，
+# 起不来或拉镜像失败就自动回落 rsshub.liumingye.cn → rsshub.ktachibana.party。
 
 on:
-    schedule:
-        # 三个时段（GitHub cron 用 UTC，北京时间 = UTC+8）
-        - cron: '30 23 * * *' # UTC 23:30 = 北京 07:30
-        - cron: '10 7 * * *' # UTC 07:10 = 北京 15:10
-        - cron: '10 14 * * *' # UTC 14:10 = 北京 22:10
     workflow_dispatch:
         inputs:
             base:
@@ -52,11 +69,6 @@ jobs:
     run:
         runs-on: ubuntu-latest
         timeout-minutes: 45
-        # services:
-        #     rsshub:
-        #         image: diygod/rsshub:chromium-bundled
-        #         ports:
-        #             - 1200:1200
         steps:
             - name: 检出仓库（本仓库历史很大，只取最新一层 + 只取需要的路径）
               uses: actions/checkout@v4
@@ -67,6 +79,7 @@ jobs:
                       /rss-digest/
                       /archive/
                       /seen_rss.json
+                      /slots.json
                   sparse-checkout-cone-mode: false
 
             - name: 安装 Python
@@ -74,10 +87,34 @@ jobs:
               with:
                   python-version: '3.12'
 
+            # 自建 RSSHub：免限流、路由最全（公共实例经常 429/503/超时）。
+            # continue-on-error：拉镜像或启动失败都不影响后面，脚本会自动回落公共实例。
+            - name: 启动自建 RSSHub 实例（可选，失败自动回落公共实例）
+              id: rsshub
+              if: ${{ vars.SELFHOST_RSSHUB != '0' }}
+              continue-on-error: true
+              run: |
+                  docker run -d --name rsshub -p 1200:1200 diygod/rsshub:chromium-bundled
+                  for i in $(seq 1 60); do
+                    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:1200/ || true)
+                    if [ -n "$code" ] && [ "$code" != "000" ]; then
+                      echo "RSSHub 自建实例就绪（HTTP $code，等待 $((i * 3)) 秒）"
+                      echo "base=http://localhost:1200" >> "$GITHUB_OUTPUT"
+                      exit 0
+                    fi
+                    sleep 3
+                  done
+                  echo "::warning title=RSSHub 自建实例未就绪::180 秒内连不上 http://localhost:1200，本轮自动回落公共实例。"
+                  docker logs --tail 20 rsshub 2>&1 || true
+
             - name: 抓取 + 关键词过滤 + 去重 + 推送
               env:
-                  RSSHUB_BASE: ${{ github.event.inputs.base || vars.RSSHUB_BASE }}
+                  EVENT_NAME: ${{ github.event_name }}
+                  RSSHUB_BASE: ${{ github.event.inputs.base || vars.RSSHUB_BASE || steps.rsshub.outputs.base }}
                   RSSHUB_FALLBACK: ${{ vars.RSSHUB_FALLBACK }}
+                  FETCH_WORKERS: ${{ vars.FETCH_WORKERS || '8' }}
+                  FETCH_TIMEOUT: ${{ vars.FETCH_TIMEOUT || '25' }}
+                  FETCH_DEADLINE: ${{ vars.FETCH_DEADLINE || '900' }}
                   SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
                   PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
                   PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC }}
@@ -103,7 +140,7 @@ jobs:
               run: |
                   git config user.name "github-actions[bot]"
                   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-                  git add seen_rss.json rss-digest archive 2>/dev/null || true
+                  git add seen_rss.json rss-digest archive slots.json 2>/dev/null || true
                   if git diff --cached --quiet; then
                     echo "无状态变化，跳过提交"
                   else
