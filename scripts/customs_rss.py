@@ -7,6 +7,12 @@
 
 只读公开新闻源（全部为境外/外媒），不碰本地文件、不依赖本机环境。
 
+抓取分两阶段（2026-10-06 起）：
+  ① 直连源（kind=rss/gnews，各自独立域名）并行抓取（FETCH_WORKERS 个线程）；
+  ② RSSHub 源串行抓取（共用实例，串行避免并发触发 429），多实例兜底 + 全失败退避重试一次。
+  直连源先拿完，RSSHub 再慢也饿不死它们——历史故障的根因就是「全串行 + 240s 预算被慢实例吃光」，
+  排在后面的十几个源连请求都没发出去，却被记成"抓取失败"，错误原因还是空的。
+
 筛选规则（两条线，命中任一即推，并在标题前标注来源线）：
   线1【查获】    标题命中 A 组「查获/执法词」
   线2【涉华出口】标题命中 C 组「敏感商品/管制议题词」，且标题或正文命中 B 组「涉华指向词」
@@ -15,6 +21,9 @@
 
 环境变量（GitHub Secrets / Variables）：
   RSSHUB_BASE / RSSHUB_FALLBACK   RSSHub 实例（留空用内置兜底链）
+  FETCH_WORKERS=8      直连源并行线程数
+  FETCH_TIMEOUT=25     单个实例单次请求超时（秒）
+  FETCH_DEADLINE=900   单轮抓取总预算（秒）；预算用尽的源记为 SKIP（不再是 FAIL，也不再是空原因）
   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK   推送渠道
   FULLTEXT=1       推送带全文（默认 workflow 里为 1）
   LOOSE=1          放宽为「正文命中查获词」
@@ -33,6 +42,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -44,8 +54,9 @@ ARCHIVE_DIR = ROOT / "archive"            # 回补存档（一次性，随仓库
 REPO_BLOB = "https://github.com/alex990077-rgb/RSSHub/blob/master"
 HK = timezone(timedelta(hours=8))
 UA = "Mozilla/5.0 (compatible; customs-rss/1.0; +https://github.com/alex990077-rgb/RSSHub)"
-TIMEOUT = 20              # 单个实例单次请求超时（秒）
-DEADLINE = 240            # 单轮抓取总预算（秒），超了就放弃剩余实例，避免拖垮 Actions
+# 可用环境变量覆盖（见文件头）：FETCH_TIMEOUT / FETCH_DEADLINE / FETCH_WORKERS
+TIMEOUT = int(os.environ.get("FETCH_TIMEOUT") or 25)     # 单个实例单次请求超时（秒）
+DEADLINE = int(os.environ.get("FETCH_DEADLINE") or 900)  # 单轮抓取总预算（秒）；用尽的源记 SKIP
 STATE_MAX = 8000          # 台账上限，超出丢最旧的
 MAX_ITEMS_PUSH = 40       # 单次推送条数上限
 # 回补时用 Google News 做「站内 + 日期范围」历史检索（feed 回不了整月）；
@@ -53,12 +64,13 @@ MAX_ITEMS_PUSH = 40       # 单次推送条数上限
 GN_TERMS_ZH = "海关 OR 查获 OR 走私 OR 关税 OR 出口管制 OR 中国 OR 无人机 OR 稀土 OR 芯片"
 GN_TERMS_EN = 'customs OR seized OR smuggling OR tariff OR "export control" OR China OR drone OR "rare earth"'
 
-# 实例兜底顺序：公共实例会限流/封 IP，某个不通自动换下一个。
+# 实例兜底顺序：自建实例最稳（无限流、路由最全），公共实例会限流/封 IP，某个不通自动换下一个。
 # 已移除 rsshub.app —— 它在 GitHub Actions 上对所有请求固定返回 403，只会掩盖真实原因（429/超时）。
+# localhost:1200 = workflow 里可选的自建实例；没起也是毫秒级 connection refused，不拖时间。
 DEFAULT_FALLBACK = (
-    "https://rsshub.liumingye.cn,https://rsshub.ktachibana.party,http://localhost:1200"
+    "http://localhost:1200,https://rsshub.liumingye.cn,https://rsshub.ktachibana.party"
 )
-# 三个推送时段（北京时间）；配合 workflow 里的主+备双 cron 使用
+# 三个推送时段（北京时间）；定时由 cron-job.org 外部 dispatch，主/备 cron 已从 workflow 移除
 SLOTS = ("07:30", "15:10", "22:10")
 BACKOFF_SECONDS = 20      # 全部实例都失败（多为 429 限流）时的退避秒数，然后整轮重试一次
 
@@ -240,6 +252,11 @@ def mark_slot(slots_done, slot_key, path):
     if len(slots_done) > 60:
         slots_done = dict(sorted(slots_done.items())[-60:])
     path.write_text(json.dumps(slots_done, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def is_local_instance(base):
+    """是不是自建/本机实例（localhost:1200）。自建实例路由最全、不限流，永远排最前。"""
+    return "localhost" in base or "127.0.0.1" in base
 
 
 def http_get(url):
@@ -582,45 +599,95 @@ def main():
     hits, stats = [], []
     t0 = time.monotonic()
     budget = 1200 if backfill else DEADLINE          # 回补给足 20 分钟预算
-    for feed in FEEDS:
-        name, region = feed["name"], feed["region"]
-        kind, target, max_age = feed["kind"], feed["target"], feed["max_age"]
-        if backfill:
-            max_age = backfill                       # 回补：按时效窗口放宽（如 30 天 = 整个 9 月）
-        # rsshub 源走多实例兜底；rss/gnews 直连只有一个 URL
-        items, used, err = None, "", None
+    workers = max(1, int(os.environ.get("FETCH_WORKERS") or 8))
+
+    def elapsed():
+        return int(time.monotonic() - t0)
+
+    # ── 抓取：① 直连源并行 ② RSSHub 源串行 ────────────────────────────────
+    def grab_direct(feed):
+        """直连源（rss/gnews）：只有一个 URL，没有实例兜底。返回 (items, used, skipped, errors)。"""
+        if time.monotonic() - t0 > budget:
+            return None, "", True, []
+        netloc = urllib.parse.urlparse(feed["target"]).netloc[:22]
+        try:
+            return parse_items(http_get(feed["target"])), netloc, False, []
+        except Exception as exc:                # noqa: BLE001 — 直连源失败就是失败
+            msg = "HTTP %s" % exc.code if getattr(exc, "code", None) else str(exc)[:40]
+            return None, "", False, ["%s=%s" % (netloc, msg)]
+
+    def grab_rsshub(feed):
+        """RSSHub 源：多实例兜底 + 全失败时退避 20s 整轮重试一次。返回 (items, used, skipped, errors)。"""
         base_errors = []
-        base_list = list(bases) if kind == "rsshub" else [""]
+        base_list = list(bases)
         prefer = feed.get("prefer")
-        if prefer:                          # 某些路由只挂在特定实例上（如 /asahi 只有 ktachibana 有）
-            base_list.sort(key=lambda b: (prefer not in b,))
+        if prefer:      # 某些路由只挂在特定公共实例上；自建实例路由最全，永远排最前
+            base_list.sort(key=lambda b: (0 if is_local_instance(b) else (1 if prefer in b else 2)))
+        items, used, skipped = None, "", False
         # 公共实例会 429 限流，限流通常几十秒就恢复 → 全失败时退避后整轮重试一次
         for attempt in range(2):
             for base in base_list:
                 if time.monotonic() - t0 > budget:
-                    err = err or RuntimeError("超过本轮 %ds 时间预算，跳过剩余源" % budget)
+                    skipped = True
                     break
                 try:
-                    url = feed_url(base, target, fulltext, limit=40 if backfill else None) if kind == "rsshub" else target
+                    url = feed_url(base, feed["target"], fulltext, limit=40 if backfill else None)
                     items = parse_items(http_get(url))
-                    used = (base or urllib.parse.urlparse(target).netloc).replace("https://", "").replace("http://", "")[:22]
-                    if kind == "rsshub" and base != bases[0]:   # 把刚成功的实例提到最前
+                    used = base.replace("https://", "").replace("http://", "")[:22]
+                    if base != bases[0]:            # 把刚成功的实例提到最前，后面的源复用
                         bases.remove(base)
                         bases.insert(0, base)
                     break
-                except Exception as exc:        # noqa: BLE001 — 换下一个实例/放弃
-                    err, items = exc, None
-                    tag = (base or target).replace("https://", "").replace("http://", "")[:22]
+                except Exception as exc:            # noqa: BLE001 — 换下一个实例/放弃
+                    items = None
+                    tag = base.replace("https://", "").replace("http://", "")[:22]
                     msg = "HTTP %s" % exc.code if getattr(exc, "code", None) else str(exc)[:28]
                     base_errors.append("%s=%s" % (tag, msg))
-            if items is not None:
+            if items is not None or skipped:
                 break
-            if attempt == 0 and kind == "rsshub" and time.monotonic() - t0 + BACKOFF_SECONDS < budget:
-                log("[%s] 全部实例失败（%s），退避 %ds 后重试一次" % (name, " | ".join(base_errors[-len(base_list):]), BACKOFF_SECONDS))
+            if attempt == 0 and time.monotonic() - t0 + BACKOFF_SECONDS < budget:
+                log("[%s] 全部实例失败（%s），退避 %ds 后重试一次"
+                    % (feed["name"], " | ".join(base_errors[-len(base_list):]), BACKOFF_SECONDS))
                 time.sleep(BACKOFF_SECONDS)
+        return items, used, skipped, base_errors
+
+    direct_feeds = [f for f in FEEDS if f["kind"] != "rsshub"]
+    rsshub_feeds = [f for f in FEEDS if f["kind"] == "rsshub"]
+    results = {}
+    if direct_feeds:
+        # 直连源各自独立域名，并行最快；先拿完，RSSHub 再慢也饿不死它们
+        n_workers = max(1, min(workers, len(direct_feeds)))
+        log("抓取阶段①：%d 个直连源（rss/gnews）并行抓取，%d 线程" % (len(direct_feeds), n_workers))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futs = [pool.submit(grab_direct, f) for f in direct_feeds]
+            for feed, fut in zip(direct_feeds, futs):
+                results[feed["name"]] = fut.result()
+        log("阶段①完成（耗时 %ds）" % elapsed())
+    if rsshub_feeds:
+        log("抓取阶段②：%d 个 RSSHub 源串行抓取（共用实例，串行避免并发触发 429）" % len(rsshub_feeds))
+        for i, feed in enumerate(rsshub_feeds, 1):
+            results[feed["name"]] = grab_rsshub(feed)
+            log("  阶段② %d/%d：%s（累计 %ds）" % (i, len(rsshub_feeds), feed["name"], elapsed()))
+
+    skipped_names = [f["name"] for f in FEEDS if results.get(f["name"], (None, "", False, []))[2]]
+    if skipped_names:
+        log("⚠ 抓取时间预算（%ds）用尽：%d 个源本轮没抓 → %s"
+            % (budget, len(skipped_names), "、".join(skipped_names)))
+
+    # ── 关键词精筛 / 跨天去重 / 成稿（按 FEEDS 原顺序，保证结果表稳定）──
+    for feed in FEEDS:
+        name, region = feed["name"], feed["region"]
+        max_age = feed["max_age"]
+        if backfill:
+            max_age = backfill                       # 回补：按时效窗口放宽（如 30 天 = 整个 9 月）
+        items, used, skipped, base_errors = results.get(name, (None, "", True, []))
+        if skipped:
+            stats.append((name, "SKIP", 0, 0, 0, 0, "-"))
+            continue
         if items is None:
             stats.append((name, "FAIL", 0, 0, 0, 0, "-"))
-            log("[%s] 抓取失败：%s" % (name, " | ".join(base_errors[-len(base_list):])[:200]))
+            log("[%s] 抓取失败（耗时 %ds）：%s"
+                % (name, elapsed(), (" | ".join(base_errors[-3:]) or "未知原因（无错误详情）")[:200]))
             continue
         got = len(items)
         n_new = n_old = n_short = n_nocn = 0
