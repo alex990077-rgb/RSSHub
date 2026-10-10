@@ -128,6 +128,10 @@ jobs:
                   LOOSE: ${{ vars.LOOSE }}
                   NOTIFY_WHEN_EMPTY: ${{ vars.NOTIFY_WHEN_EMPTY }}
                   FULLTEXT: ${{ vars.FULLTEXT || '1' }}
+                  # 保存到 rss-digest/*.md 的条目是否也带正文（1=带全文，0=只存标题+链接）
+                  DIGEST_FULLTEXT: ${{ vars.DIGEST_FULLTEXT || '1' }}
+                  # 保存时单条正文上限（留空=TEXT_LIMIT；0=不限）
+                  DIGEST_TEXT_LIMIT: ${{ vars.DIGEST_TEXT_LIMIT || '' }}
                   TRANSLATE: ${{ vars.TRANSLATE || '1' }}
                   TRANSLATE_BODY: ${{ vars.TRANSLATE_BODY || '1' }}
                   MIN_TEXT: ${{ vars.MIN_TEXT || '300' }}

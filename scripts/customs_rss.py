@@ -3,7 +3,7 @@
 海关查获 & 涉华出口风险 · RSSHub 通道（云端专用，纯标准库，零依赖）
 
 链路：RSSHub 路由（自带 filter 粗筛）→ 本地三组关键词精筛 → 跨天去重 → 推送微信
-产物：seen_rss.json（去重台账）+ rss-digest/YYYY-MM-DD.md（可读结果）+ Actions 日志
+产物：seen_rss.json（去重台账）+ rss-digest/YYYY-MM-DD.md（可读结果，**条目带正文全文**）+ Actions 日志
 
 只读公开新闻源（全部为境外/外媒），不碰本地文件、不依赖本机环境。
 
@@ -26,6 +26,8 @@
   FETCH_DEADLINE=900   单轮抓取总预算（秒）；预算用尽的源记为 SKIP（不再是 FAIL，也不再是空原因）
   SERVERCHAN_SENDKEY / PUSHPLUS_TOKEN / PUSHPLUS_TOPIC / WECOM_WEBHOOK   推送渠道
   FULLTEXT=1       推送带全文（默认 workflow 里为 1）
+  DIGEST_FULLTEXT=1     保存的 rss-digest/*.md 也带全文（默认 1；=0 则只存标题+链接）
+  DIGEST_TEXT_LIMIT     保存时单条正文上限（字符，默认跟随 TEXT_LIMIT；0=不限）
   LOOSE=1          放宽为「正文命中查获词」
   NOTIFY_WHEN_EMPTY=1  本轮无新增也推一条"报平安"（默认不推）
   PUSH_TEST=N      测试推送：每源取前 N 条、强制全文、忽略去重、不写台账/digest
@@ -484,6 +486,71 @@ def build_body(hits, per_item, total_limit):
     return "\n\n──────────\n\n".join(parts), used, truncated
 
 
+def clip_text(text, limit):
+    """按上限裁剪正文；limit 为 0/None 表示不限制。返回 (文本, 是否被截断)。"""
+    txt = (text or "").strip()
+    if limit and len(txt) > limit:
+        return txt[:limit] + "……（正文超长已截断，详见链接）", True
+    return txt, False
+
+
+def md_quote_block(text, limit):
+    """把正文渲染成「列表项内的引用块」：逐行加 2 空格 + '>'，空行用 '>' 占位。
+
+    整段正文因此挂在同一个 bullet 下，GitHub / 手机端渲染对齐正常，
+    正文里的空行也不会把列表截断（markdown 的缩进续行会被空行打断）。
+    """
+    txt, _ = clip_text(text, limit)
+    if not txt:
+        return []
+    out = []
+    for line in txt.split("\n"):
+        line = line.rstrip()
+        out.append("  > %s" % line if line else "  >")
+    return out
+
+
+def build_digest_section(hits, stats, now_hk, flags, fulltext=True, text_limit=6000):
+    """落盘用的「一节」Markdown：源状态表 + 每个命中条目的 标题 / 链接 / 正文全文。
+
+    与推送正文（build_body）取自同一份 h["text"]，区别是**不受整条推送上限
+    PUSH_LIMIT 约束**：推送里因超长被整条截掉的条目，在保存的文件里仍是完整的。
+    """
+    sec = ["\n## %s ｜ 新增 %d 条%s\n" % (now_hk.strftime("%H:%M"), len(hits),
+                                           ("（%s）" % "，".join(flags)) if flags else ""),
+           "\n| 源 | 状态 | 条目 | 命中 | 过期 | 丢弃 | 源站 |",
+           "| --- | --- | --- | --- | --- | --- | --- |"]
+    for name, status, got, n_new, n_old, n_short, used in stats:
+        sec.append("| %s | %s | %d | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, n_short, used))
+    if not hits:
+        sec.append("\n本节无新增。\n")
+        return sec
+    sec.append("")
+    if fulltext:
+        sec.append("> 以下每条附正文（外文已译中文；单条上限 %s）——推送里被整条长度上限截掉的条目，这里仍是完整的。\n"
+                   % ("不限" if not text_limit else "%d 字" % text_limit))
+    for h in hits:
+        zh = h.get("zh_title")
+        label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
+        raw = h.get("text") or ""
+        body, cut = clip_text(raw, text_limit)
+        if not raw:
+            meta = "源未提供全文（仅标题+链接）"
+        elif cut:
+            meta = "正文 %d 字（已按上限截断）" % len(raw)
+        elif len(raw) < 300:
+            meta = "正文 %d 字（源只给摘要，非全文）" % len(raw)
+        else:
+            meta = "正文 %d 字" % len(raw)
+        sec.append("- **【%s·%s】%s** %s  \n  <%s>  ｜  %s"
+                   % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"], meta))
+        if fulltext and body:
+            sec.append("")
+            sec.extend(md_quote_block(body, 0))     # body 已裁剪过，这里不再裁
+    sec.append("")
+    return sec
+
+
 def push_all(title, body):
     """把一条消息推到所有已配置的渠道，返回错误列表（空=全部成功或无需推送）。"""
     key = os.environ.get("SERVERCHAN_SENDKEY")
@@ -532,6 +599,9 @@ def main():
         fulltext = True                    # 测试推送一律带全文
     per_item = int(os.environ.get("TEXT_LIMIT") or 6000)      # 每条正文上限（字符）
     total_limit = int(os.environ.get("PUSH_LIMIT") or 28000)  # 整条推送上限（Server酱 32KB 以内）
+    _dl = os.environ.get("DIGEST_TEXT_LIMIT")
+    digest_limit = per_item if _dl in (None, "") else int(_dl)   # 保存用单条正文上限，0=不限
+    digest_fulltext = os.environ.get("DIGEST_FULLTEXT") != "0"   # 默认开：保存的 digest 也带全文
     primary = (os.environ.get("RSSHUB_BASE") or "").strip().rstrip("/")
     fallback = [b.strip().rstrip("/") for b in (os.environ.get("RSSHUB_FALLBACK") or DEFAULT_FALLBACK).split(",") if b.strip()]
     bases = []
@@ -543,6 +613,9 @@ def main():
     log("正文模式：%s ｜ 源 %d 个（%s）｜ 翻译：%s%s ｜ 无全文阈值：%d 字"
         % ("全文（mode=fulltext）" if fulltext else "摘要", len(FEEDS), "".join(sorted({f["lang"] for f in FEEDS})),
            "开" if translate else "关", "（含正文）" if (translate and translate_body) else "", min_text))
+    log("保存模式：rss-digest 条目%s ｜ 单条正文上限：%s"
+        % ("带全文" if digest_fulltext else "只存标题+链接（DIGEST_FULLTEXT=0）",
+           "不限" if not digest_limit else "%d 字" % digest_limit))
     for lang in KW:
         log("\n[%s] A组·查获/执法词：%s" % (lang, KW[lang]["A"]))
         log("[%s] B组·涉华指向词：%s" % (lang, KW[lang]["B"]))
@@ -831,6 +904,10 @@ def main():
                 label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
                 lines.append("- **【%s·%s】%s** %s  \n  <%s>  \n  正文 %d 字"
                              % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"], len(h["text"])))
+                if digest_fulltext:      # 存档同样落全文（与 rss-digest 一致）
+                    block = md_quote_block(h["text"], digest_limit)
+                    if block:
+                        lines.append("\n".join(block))
         lines.append("\n## B. 历史线索（Google News 站内检索 %s ~ %s，仅标题+摘要，共 %d 条）\n"
                      % (after, before, len(gn_rows)))
         gn_by_day = {}
@@ -897,25 +974,14 @@ def main():
     if not day_file.exists():
         sec.append("# 海关查获 & 涉华出口风险 · %s\n" % now_hk.strftime("%Y-%m-%d"))
         sec.append("> 由 `.github/workflows/customs-rss.yml` 自动生成；每天 07:30 / 15:10 / 22:10（北京）各追加一节，只记新增，跨天不重复。")
+        sec.append("> 每节条目**带正文全文**（与推送同文；外文已译中文）——推送因整条长度上限被截掉的条目，在这里是完整的。")
         sec.append("> 线1【查获】= 标题命中查获/执法词；线2【涉华出口】= 标题命中敏感商品/管制词 且 涉华。\n")
     flags = []
     if dry:
         flags.append("dry-run 演练，未推送")
     if loose:
         flags.append("宽松模式")
-    sec.append("\n## %s ｜ 新增 %d 条%s\n" % (now_hk.strftime("%H:%M"), len(hits), ("（%s）" % "，".join(flags)) if flags else ""))
-    sec.append("\n| 源 | 状态 | 条目 | 命中 | 过期 | 丢弃 | 源站 |")
-    sec.append("| --- | --- | --- | --- | --- | --- | --- |")
-    for name, status, got, n_new, n_old, n_short, used in stats:
-        sec.append("| %s | %s | %d | %d | %d | %d | %s |" % (name, status, got, n_new, n_old, n_short, used))
-    if hits:
-        sec.append("\n")
-        for h in hits:
-            zh = h.get("zh_title")
-            label = ("%s（%s）" % (zh, h["title"])) if zh else h["title"]
-            sec.append("- **【%s·%s】%s** %s  \n  <%s>" % (h["region"], h["line"], "★涉华 " if h["cn"] else "", label, h["link"]))
-    else:
-        sec.append("\n本节无新增。\n")
+    sec.extend(build_digest_section(hits, stats, now_hk, flags, digest_fulltext, digest_limit))
     if not dry:
         with day_file.open("a", encoding="utf-8") as fh:
             fh.write("\n".join(sec) + "\n")
