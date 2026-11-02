@@ -29,6 +29,7 @@
   DIGEST_FULLTEXT=1     保存的 rss-digest/*.md 也带全文（默认 1；=0 则只存标题+链接）
   DIGEST_TEXT_LIMIT     保存时单条正文上限（字符，默认跟随 TEXT_LIMIT；0=不限）
   LOOSE=1          放宽为「正文命中查获词」
+  B_BODY=1         线2/线3 的涉华词也允许在正文/摘要命中（标题过短时兜底，默认关）
   NOTIFY_WHEN_EMPTY=1  本轮无新增也推一条"报平安"（默认不推）
   PUSH_TEST=N      测试推送：每源取前 N 条、强制全文、忽略去重、不写台账/digest
   SELFTEST=1       只自检推送通道
@@ -125,7 +126,11 @@ KW = {
         ),
         "B": (
             r"中國|中国|中方|中企|國企|国企|中資|中资|中國製造|中国制造|Made in China|Chinese|"
-            r"大陸|大陆|內地|内地|中港|香港|北京|上海|廣東|广东|義烏|义乌|人民幣|人民币"
+            r"大陸|大陆|內地|内地|中港|香港|北京|上海|廣東|广东|義烏|义乌|人民幣|人民币|"
+            # 2026-11-02 补：台湾/香港媒体说「大陆制造」常写「陆制/陆货/陆资/陆企」，不写「大陆」「中国」。
+            # 漏例：〈台企涉使用陆制晶片制造军用无人机 台内政部采购32架〉（联合早报 2026-11-01 11:37）
+            #       C 组命中「晶片/无人机」，B 组全空 → 被本地精筛丢弃（RSSHub 粗筛其实放行了）
+            r"陸製|陆制|大陸製|大陆制|陸產|陆产|陸貨|陆货|陸資|陆资|陸企|陆企|陸廠|陆厂|中共"
         ),
         "C": (
             r"無人機|无人机|drone|兩用物項|两用物项|軍民兩用|军民两用|出口管制|出口禁令|管制清單|管制清单|"
@@ -224,6 +229,8 @@ D_FLOW = re.compile("|".join("(?:%s)" % KW[k]["D"] for k in KW), re.I)
 T_TRADE = re.compile("|".join("(?:%s)" % KW[k]["T"] for k in KW), re.I)
 E_CROSS = re.compile("|".join("(?:%s)" % KW[k]["E"] for k in KW), re.I)
 N_NOISE = re.compile("|".join("(?:%s)" % KW[k]["N"] for k in KW), re.I)
+# B_BODY=1：线2/线3 的「涉华指向词」也允许在正文/摘要里命中（标题信息量不足的中文源兜底；默认关）
+B_BODY = os.environ.get("B_BODY") == "1"
 
 # RSSHub 端的粗筛（召回优先，只放高价值词，避免 URL 过长）：
 # 真正决定"推不推"的是上面 A/B/C 三组的本地精筛。
@@ -233,6 +240,7 @@ CORE_FILTER = (
     r"無人機|无人机|兩用物項|两用物项|出口管制|稀土|石墨|鎵|镓|鍺|锗|晶片|芯片|半導體|半导体|"
     r"鋰電池|锂电池|光伏|武器|彈藥|弹药|導彈|导弹|制裁|洗產地|洗产地|原產地|原产地|轉運|转运|"
     r"轉口|转口|關稅|关税|反傾銷|反倾销|強迫勞動|强迫劳动|供應鏈|供应链|報關|报关|"
+    r"陸製|陆制|大陸製|大陆制|陸產|陆产|陸貨|陆货|陸資|陆资|陸企|陆企|中共|"
     r"胡塞|真主黨|真主党|哈瑪斯|哈马斯|伊朗|朝鮮|朝鲜|俄羅斯|俄罗斯|受制裁|繞道|绕道|第三國|第三国|"
     r"黑市|掮客|中介|網店|网店|電商|电商|"
     r"China|Chinese|customs|seized|smuggl|export control|dual-use|drone|rare earth|semiconductor|"
@@ -404,12 +412,13 @@ def classify(title, desc, loose=False):
     线3【涉华流向】= 标题同时命中 B + D（受制裁买家/规避手法/黑市渠道）+ T（贸易流向词）
     另外：标题命中 N（噪音词：诈骗/赌博/车祸/家暴…）直接丢弃
     LOOSE=1 放宽：B 可放宽到正文；线1 允许 A 在正文（E 仍在标题）
+    B_BODY=1 只把「线2/线3 的 B」放宽到正文，线1 不受影响
     """
     if N_NOISE.search(title):
         return None
     if A_ENFORCE.search(title) and E_CROSS.search(title):
         return "查获"
-    b_hit = B_CHINA.search(title) or (loose and B_CHINA.search(title + " " + desc))
+    b_hit = B_CHINA.search(title) or ((loose or B_BODY) and B_CHINA.search(title + " " + desc))
     if C_GOODS.search(title) and b_hit:
         return "涉华出口"
     if D_FLOW.search(title) and T_TRADE.search(title) and b_hit:
